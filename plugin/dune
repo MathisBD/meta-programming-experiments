@@ -1,0 +1,9 @@
+(library
+ (name plugin)
+ (public_name meta-programming-experiments.plugin)
+ (flags
+  (:standard -warn-error +A -w -27-32-69 -rectypes))
+ (libraries rocq-runtime.lib rocq-runtime.plugins.ltac2 rocq-runtime.tactics))
+
+(coq.pp
+ (modules g_plugin))

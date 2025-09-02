@@ -1,0 +1,8 @@
+DECLARE PLUGIN "meta-programming-experiments.plugin"
+
+{
+}
+
+VERNAC COMMAND EXTEND Test CLASSIFIED AS SIDEFF
+| [ "Test" ] -> { Log.printf "Hello" }
+END
