@@ -5,4 +5,7 @@ Inductive M : Type -> Type :=
 | Bind {A B} : M A -> (A -> M B) -> M B
 | FreshNat : unit -> M nat.
 
-Test.
+Definition prog : M nat :=
+  FreshNat tt.
+
+Extract prog.

@@ -1,8 +1,9 @@
 DECLARE PLUGIN "meta-programming-experiments.plugin"
 
 {
+  open Stdarg
 }
 
-VERNAC COMMAND EXTEND Test CLASSIFIED AS SIDEFF
-| [ "Test" ] -> { Log.printf "Hello" }
+VERNAC COMMAND EXTEND Extract CLASSIFIED AS SIDEFF
+| [ "Extract" global(id) ] -> { Main.extract id }
 END
