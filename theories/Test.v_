@@ -1,0 +1,285 @@
+From Stdlib Require Import List.
+From stdpp Require Import gmap.
+Import ListNotations.
+
+(**************************************************************************)
+(** *** Lambda terms. *)
+(**************************************************************************)
+
+Definition binder := unit.
+Definition inner (T : Type) := T.
+Definition outer (T : Type) := T.
+Definition abs (T : Type) := T.
+
+(** Free variables are represented using a name. *)
+Definition name := nat.
+
+(** Variables can be a bound variable (de Bruijn index)
+    or a free variable (a name). *)
+Inductive var :=
+| BV : nat -> var
+| FV : name -> var.
+
+Inductive term :=
+| Var : var -> term
+| App : term -> term -> term
+| Lam : abs (binder * inner term) -> term.
+
+(** A context contains all the free variables currently in scope. *)
+Definition context := gset name.
+
+(**************************************************************************)
+(** *** A small separation logic. *)
+(**************************************************************************)
+
+(** [cprop] is the type of propositions parameterized over a context.
+    [cprop] inherits the usual connectives of [Prop] (conjunction, disjunction,
+    quantifiers, etc) via pointwise lifting. *)
+Definition cprop := context -> Prop.
+
+Declare Scope cprop_scope.
+Delimit Scope cprop_scope with cprop.
+Bind Scope cprop_scope with cprop.
+
+(** Usual connectives on [cprop]. *)
+Notation "'⌜' P '⌝'" := (fun _ => P) : cprop_scope.
+Notation "P '/\' Q" := (fun c => P c /\ Q c)
+  (at level 80, right associativity) : cprop_scope.
+Notation "P '\/' Q" := (fun c => P c \/ Q c)
+  (at level 85, right associativity) : cprop_scope.
+Notation "P '->' Q" := (fun c => P c -> Q c)
+  (at level 99, right associativity) : cprop_scope.
+Notation "'∀' x ',' P" := (fun c => forall x, P c)
+  (at level 100, right associativity) : cprop_scope.
+
+(** Separating conjunction [P ∗ Q]: it asserts that the context can be split in two
+    disjoint parts, such that [P] is true on the first and [Q] is true on the second. *)
+Definition star (P Q : cprop) : cprop := fun c =>
+  exists c1 c2, c = c1 ∪ c2 /\ c1 ## c2 /\ P c1 /\ Q c2.
+Notation "P '∗' Q" := (star P Q)
+  (at level 80, right associativity) : cprop_scope.
+
+(** Separating implication [P -∗ Q] (aka magic wand). *)
+Definition wand (P Q : cprop) : cprop := fun c =>
+  forall c', c ## c' /\ P c' -> Q (c ∪ c').
+Notation "P '-∗' Q" := (wand P Q)
+  (at level 80, right associativity) : cprop_scope.
+
+(** The assertion [&x] asserts that the context is the singleton [{x}]. *)
+Notation "'&' x" := (fun c => c = {[ x ]})
+  (at level 20, format "'&' x") : cprop_scope.
+
+(** The assertion [&&c] asserts that the context is exactly [c]. *)
+Notation "'&&' c" := (fun c' => c = c')
+  (at level 20, format "'&&' c") : cprop_scope.
+
+(** Embed [cprop] into [Prop]. *)
+Definition embed (P : cprop) : Prop := P ∅.
+Notation "'⊢' P" := (embed P) (at level 90).
+
+Lemma embed_spec P c : P c <-> ⊢ && c -∗ P.
+Proof.
+split ; intros H.
+- unfold embed. unfold wand. intros c' [H1 ->].
+  rewrite union_empty_l_L. assumption.
+- unfold embed in H. specialize (H c).
+  rewrite union_empty_l_L in H. apply H. split ; [|reflexivity].
+  apply disjoint_empty_l.
+Qed.
+
+(** The proof is low-level (we unfold the definitions of the -∗ and &),
+    but using Iris-like tactics it could maybe be higher level. *)
+Lemma singleton_neq x y : ⊢ &x -∗ &y -∗ ⌜x ≠ y⌝.
+Proof.
+intros c1 [_ ->]. rewrite union_empty_l_L.
+intros c2 [H ->]. rewrite disjoint_singleton_l in H.
+apply not_elem_of_singleton_1 in H. assumption.
+Qed.
+
+(**************************************************************************)
+(** *** Opening/closing. *)
+(**************************************************************************)
+
+(** Free variables in a term. *)
+Fixpoint free_vars (t : term) : gset name :=
+  match t with
+  | Var (BV _) => ∅
+  | Var (FV x) => {[ x ]}
+  | App t1 t2 => free_vars t1 ∪ free_vars t2
+  | Lam (tt, t) => free_vars t
+  end.
+
+Fixpoint open_aux (n : nat) (x : name) (t : term) : term :=
+  match t with
+  | Var (BV i) => if i =? n then Var (FV x) else Var (BV i)
+  | Var (FV y) => Var (FV y)
+  | App t1 t2 => App (open_aux n x t1) (open_aux n x t2)
+  | Lam (tt, t) => Lam (tt, open_aux (S n) x t)
+  end.
+
+(** [open x t] replaces the bound variable [0] with the free variable [x] in [t]. *)
+Definition open (x : name) (t : term) : term :=
+  open_aux 0 x t.
+
+Fixpoint close_aux (n : nat) (x : name) (t : term) : term :=
+  match t with
+  | Var (BV i) => Var (BV i)
+  | Var (FV y) => if x =? y then Var (BV n) else Var (FV y)
+  | App t1 t2 => App (close_aux n x t1) (close_aux n x t2)
+  | Lam (tt, t) => Lam (tt, close_aux (S n) x t)
+  end.
+
+(** [close x t] replaces the free variable [x] with the bound variable [0] in [t]. *)
+Definition close (x : name) (t : term) : term :=
+  close_aux 0 x t.
+
+(** [subst x u t] builds the term [t{x := u}], i.e. it substitutes
+    all occurences of [x] with [u] in [t]. *)
+Fixpoint subst (x : name) (u : term) (t : term) : term :=
+  match t with
+  | Var (BV i) => Var (BV i)
+  | Var (FV y) => if x =? y then u else Var (FV y)
+  | App t1 t2 => App (subst x u t1) (subst x u t2)
+  | Lam (tt, t) =>
+      let* y := fresh () in
+      Lam (tt, close y (subst x u (open y t)))
+  end.
+
+Lemma close_open x t :
+  x ∉ free_vars t -> close x (open x t) = t.
+Proof.
+intros H. induction t.
+- destruct v as [i | y] ; cbn.
+  + destruct (Nat.eqb_spec i 0) ; subst ; cbn.
+    * rewrite Nat.eqb_refl. reflexivity.
+    * reflexivity.
+  + destruct (Nat.eqb_spec x y) ; subst.
+    * cbn in H. apply not_elem_of_singleton_1 in H. done.
+    * reflexivity.
+Admitted.
+
+(** Local closure. *)
+(* The freshness condition in lc_lam is not strictly necessary. *)
+Inductive lc : term -> Prop :=
+| lc_var x : lc (Var (FV x))
+| lc_app t1 t2 : lc t1 -> lc t2 -> lc (App t1 t2)
+| lc_lam x t : (* &x -∗ *) lc (open x t) -> lc (Lam (tt, t)).
+
+(** Alpha equivalence. *)
+(* The freshness condition in aeq_lam _is_ necessary.
+   Otherwise we would equate the terms [λx. x] and [λx. y] by opening both with [y]. *)
+Inductive aeq : term -> term -> Prop :=
+| aeq_var x : aeq (Var (FV x)) (Var (FV x))
+| aeq_app t1 t2 u1 u2 : aeq t1 u1 -> aeq t2 u2 -> aeq (App t1 t2) (App u1 u2)
+| aeq_lam x t u : (* &x -∗ *) aeq (open x t) (open x u) -> aeq (Lam (tt, t)) (Lam (tt, u)).
+
+(** One-step reduction rule. *)
+Inductive red1 : term -> term -> Prop :=
+| red1_app_l t t' u : red1 t t' -> red1 (App t u) (App t' u)
+| red1_app_r t u u' : red1 u u' -> red1 (App t u) (App t u')
+| red1_lam x t t' : red1 (open x t) (open x t') -> red1 (Lam (tt, t)) (Lam (tt, t'))
+| red1_beta x t u : red1 (App (Lam (tt, t)) u) (subst x u (open x t)).
+
+(** *** Renamings. *)
+
+(*Definition swap (a b : atom) (x : atom) : atom :=
+  if atom_eq x a then b
+  else if atom_eq x b then a
+  else x.
+
+Fixpoint rename (a b : atom) (t : term) : term :=
+  match t with
+  | Var x => Var (swap a b x)
+  | App t1 t2 => App (rename a b t1) (rename a b t2)
+  | Lam (x, t) => Lam (swap a b x, rename a b t)
+  end.*)
+
+(** *** Contexts. *)
+
+
+(** A state/exception monad over the context. *)
+Definition M (A : Type) : Type := context -> option (A * context).
+
+(** Monadic return. *)
+Definition ret {A} (x : A) : M A :=
+  fun ctx => Some (x, ctx).
+
+(** Monadic bind. *)
+Definition bind {A B} (mx : M A) (f : A -> M B) : M B :=
+  fun ctx =>
+    match mx ctx with
+    | None => None
+    | Some (x, ctx) => f x ctx
+    end.
+
+(** [let*] notation. *)
+Notation "'let*' x ':=' t 'in' u" := (bind t (fun x => u))
+  (at level 100, right associativity, t at next level).
+
+(** Primitive to fail. *)
+Definition fail {A} : M A :=
+  fun ctx => None.
+
+(** Primitive to get the context. *)
+Definition get_ctx : M context :=
+  fun ctx => Some (ctx, ctx).
+
+(** Primitive to replace the context. *)
+Definition put_ctx (ctx : context) : M unit :=
+  fun _ => Some (tt, ctx).
+
+(** *** Opening/closing terms. *)
+
+(** Generate a name which is not in the context. *)
+Axiom fresh_name : context -> atom.
+
+Definition unbind_lam (t : abs (atom * inner term)) : M (atom * term) :=
+  let (x, body) := t in
+  let* ctx := get_ctx in
+  let y := fresh_name ctx in
+  let* _ := put_ctx (ctx ∪ {[ y ]}) in
+  ret (y, rename x y body).
+
+Definition bind_lam (t : atom * term) : abs (atom * inner term) := t.
+
+(** *** Reasoning about names. *)
+
+(*Inductive well_scoped : term -> cprop :=
+
+| well_scoped_Var x :
+    &x -∗ well_scoped (Var x)
+
+| well_scoped_App t1 t2 :
+    well_scoped t1 -∗ well_scoped t2 -∗ well_scoped (App t1 t2)
+
+| well_scoped_Lam x t :
+    &x -∗ well_scoped (open x t) -∗ well_scoped (Lam t).*)
+
+(*Fixpoint well_scoped (t : term) : cprop :=
+  match t with
+  | Var x => &x
+  | App t1 t2 => well_scoped t1 ∗ well_scoped t2
+  | Lam t => forall x, &x -∗ well_scoped (open x t)
+  end.*)
+
+(** *** Hoare triples. *)
+
+Definition hoare_triple {A} (P : cprop) (t : M A) (Q : A -> cprop) : Prop :=
+  forall ctx,
+    match t ctx with
+    | None => False
+    | Some (res, ctx') => P ctx -> Q res ctx'
+    end.
+(*Arguments hoare_triple {A} P%_cprop t Q%_cprop.*)
+Notation "'{{' P '}}' t '{{' v '.' Q '}}'" := (hoare_triple P t (fun v => Q))
+  (at level 100, v binder).
+
+Axiom alpha_eq : term -> term -> Prop.
+Notation "t =α u" := (alpha_eq t u)
+  (at level 60, no associativity).
+
+Lemma unbind_spec x t :
+  {{ ⌜True⌝ }}
+    unbind_lam (x, t)
+  {{ '(x', t'). (&x' ∗ ⌜Lam (x, t) =α Lam (x', t')⌝)%cprop }}.
+Proof.
