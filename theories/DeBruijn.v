@@ -188,7 +188,8 @@ Qed.
 
 Definition zip (t : term * list term) := apps (fst t) (snd t).
 
-(** Strong call-by-value stack reduction machine. *)
+(** Strong call-by-value stack reduction machine.
+    The implementation is quite naive. *)
 Fixpoint reduce_stack (fuel : nat) (t : term) (stack : list term) : M (term * list term) :=
   match fuel with 0 => fail | S fuel =>
   match t with
