@@ -197,12 +197,12 @@ Fixpoint reduce_stack (fuel : nat) (t : term) (stack : list term) : M (term * li
   | app f x => reduce_stack fuel f (x :: stack)
   | lam t =>
     match stack with
-    | x :: stack =>
-      let* x := reduce_stack fuel x [] in
-      reduce_stack fuel (subst0 (zip x) t) stack
     | [] =>
       let* t := reduce_stack fuel t [] in
       ret (lam (zip t), [])
+    | x :: stack =>
+      let* x := reduce_stack fuel x [] in
+      reduce_stack fuel (subst0 (zip x) t) stack
     end
   end
   end.
@@ -210,9 +210,9 @@ Fixpoint reduce_stack (fuel : nat) (t : term) (stack : list term) : M (term * li
 Lemma reduce_stack_correct fuel t stack :
   {{ True }} reduce_stack fuel t stack {{ t'. apps t stack ~~> zip t' }}.
 Proof.
-induction fuel in t, stack |- * ; cbn [reduce_stack] ; intros Φ _ HΦ.
-- wp_step.
-- destruct t.
+induction fuel in t, stack |- * ; cbn [reduce_stack].
+- intros Φ _ HΦ. wp_step.
+- intros Φ _ HΦ. destruct t.
   + wp_step. apply HΦ. cbn. reflexivity.
   + apply IHfuel ; [constructor|]. intros [t' stack'] H. apply HΦ. exact H.
   + destruct stack as [| x stack].

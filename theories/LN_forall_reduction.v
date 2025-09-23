@@ -145,7 +145,10 @@ Inductive lc : term -> Prop :=
 | lc_app t1 t2 :
     lc t1 -> lc t2 -> lc (app t1 t2)
 | lc_lam t :
-    (forall x, x ∉ fv t -> lc (t ^ x)) -> lc (lam t).
+    (forall x, x ∉ fv t -> lc (t ^ x)) ->
+    lc (lam t).
+(** TODO: lookup autosubst predicate transformers on de Bruijn indices.
+    What do we gain? *)
 
 (**************************************************************************)
 (** *** Basic lemmas. *)
@@ -215,7 +218,7 @@ intros Hx' ; apply Hx ; clear Hx. rewrite <-(swap_name_inv a b x).
 now apply swap_fv.
 Qed.
 
-(** Existantially quantified version of [lc_lam]. *)
+(** Existentially quantified version of [lc_lam]. *)
 Lemma lc_lam' x t :
   x ∉ fv t -> lc (t ^ x) -> lc (lam t).
 Proof.
@@ -343,6 +346,16 @@ Inductive red1 : term -> term -> Prop :=
     lam t ~~>₁ lam t'
 where "t '~~>₁' u" := (red1 t u).
 
+(*
+| red1_lam x t t' :
+    x ∉ fv t -> x ∉ fv t' -> t ^ x ~~>₁ t' ^ x ->
+    lam t ~~>₁ lam t'
+
+| red1_lam L t t' :
+    (forall x, x ∉ L -> t ^ x ~~>₁ t' ^ x) ->
+    lam t ~~>₁ lam t'
+
+*)
 Inductive red : term -> term -> Prop :=
 | red_refl t : t ~~> t
 | red_step t1 t2 t3 : t1 ~~> t2 -> t2 ~~>₁ t3 -> t1 ~~> t3
