@@ -26,15 +26,15 @@ Lemma eqb_name_spec n n' :
   reflect (n = n') (eqb_name n n').
 Proof.
 unfold eqb_name. destruct (string_dec n n').
-- now left.
-- now right.
+- by left.
+- by right.
 Qed.
 
 Lemma eqb_name_true n : eqb_name n n = true.
 Proof. destruct (eqb_name_spec n n) ; auto. Qed.
 
 Lemma eqb_name_false n n' : n ≠ n' -> eqb_name n n' = false.
-Proof. intros H. destruct (eqb_name_spec n n') ; auto. now exfalso. Qed.
+Proof. intros H. destruct (eqb_name_spec n n') ; auto. by exfalso. Qed.
 
 (**************************************************************************)
 (** *** Swapping names. *)
@@ -49,30 +49,30 @@ Lemma swap_name_inv a b x :
   swap_name a b (swap_name a b x) = x.
 Proof.
 unfold swap_name. destruct (eqb_name_spec x a) ; subst.
-- rewrite eqb_name_true. now destruct (eqb_name_spec b a).
+- rewrite eqb_name_true. by destruct (eqb_name_spec b a).
 - destruct (eqb_name_spec x b) ; subst.
-  + now rewrite eqb_name_true.
-  + now rewrite eqb_name_false, eqb_name_false by assumption.
+  + by rewrite eqb_name_true.
+  + by rewrite eqb_name_false, eqb_name_false by assumption.
 Defined.
 
 Lemma swap_name_inj a b x x' :
   swap_name a b x = swap_name a b x' -> x = x'.
 Proof.
 intros H1. apply (f_equal (swap_name a b)) in H1.
-now rewrite !swap_name_inv in H1.
+by rewrite !swap_name_inv in H1.
 Qed.
 
 Lemma swap_name_left a b : swap_name a b a = b.
-Proof. cbn. unfold swap_name. now rewrite eqb_name_true. Qed.
+Proof. cbn. unfold swap_name. by rewrite eqb_name_true. Qed.
 
 Lemma swap_name_right a b : swap_name a b b = a.
 Proof. cbn. unfold swap_name. destruct (eqb_name_spec b a) ; auto.
-now rewrite eqb_name_true.
+by rewrite eqb_name_true.
 Qed.
 
 Lemma swap_name_free a b x :
   x ≠ a -> x ≠ b -> swap_name a b x = x.
-Proof. intros Ha Hb. cbn. unfold swap_name. now rewrite eqb_name_false, eqb_name_false. Qed.
+Proof. intros Ha Hb. cbn. unfold swap_name. by rewrite eqb_name_false, eqb_name_false. Qed.
 
 (**************************************************************************)
 (** *** Lambda terms and basic operations. *)
@@ -163,49 +163,46 @@ Lemma swap_term_inv a b t :
   swap_term a b (swap_term a b t) = t.
 Proof.
 induction t ; cbn ; try congruence.
-now rewrite swap_name_inv.
+by rewrite swap_name_inv.
 Qed.
 
 Lemma swap_term_inj a b t t' :
   swap_term a b t = swap_term a b t' -> t = t'.
 Proof.
 intros H. apply (f_equal (swap_term a b)) in H.
-now rewrite !swap_term_inv in H.
+by rewrite !swap_term_inv in H.
 Qed.
 
 Lemma swap_term_free a b t :
   a ∉ fv t -> b ∉ fv t -> swap_term a b t = t.
 Proof.
 intros Ha Hb. induction t ; cbn in *.
-- rewrite not_elem_of_singleton in Ha, Hb. now rewrite swap_name_free.
-- reflexivity.
-- rewrite not_elem_of_union in Ha, Hb. now rewrite IHt1, IHt2.
-- now rewrite IHt.
+- rewrite swap_name_free ; set_solver.
+- constructor.
+- rewrite IHt1, IHt2 ; set_solver.
+- by rewrite IHt.
 Qed.
 
 Lemma swap_term_open a b t u :
   swap_term a b (t ^^ u) = (swap_term a b t) ^^ (swap_term a b u).
 Proof.
-generalize 0. induction t ; intros k ; cbn.
-- reflexivity.
-- destruct (Nat.eqb_spec i k) ; reflexivity.
-- rewrite IHt1, IHt2. reflexivity.
-- rewrite IHt. reflexivity.
+generalize 0. induction t ; intros k ; cbn ; try congruence.
+by destruct (Nat.eqb_spec i k).
 Qed.
 
 Lemma swap_term_open_var a b t x :
   swap_term a b (t ^ x) = (swap_term a b t) ^ (swap_name a b x).
-Proof. now rewrite swap_term_open. Qed.
+Proof. by rewrite swap_term_open. Qed.
 
 Lemma swap_term_close a b t x :
   swap_term a b (t \^ x) = (swap_term a b t) \^ (swap_name a b x).
 Proof.
 generalize 0. induction t ; intros k ; cbn.
 - destruct (eqb_name_spec x x0) ; subst ; cbn.
-  + now rewrite eqb_name_true.
+  + by rewrite eqb_name_true.
   + rewrite eqb_name_false.
     * reflexivity.
-    * intros H. apply n. now apply swap_name_inj in H.
+    * intros H. apply n. by apply swap_name_inj in H.
 - reflexivity.
 - rewrite IHt1, IHt2. reflexivity.
 - rewrite IHt. reflexivity.
@@ -217,13 +214,8 @@ Proof.
 enough (forall x t, x ∈ fv t -> swap_name a b x ∈ fv (swap_term a b t)).
 { split ; [|apply H]. rewrite <-(swap_name_inv a b x), <-(swap_term_inv a b t) at 2.
   apply H. }
-clear x t ; intros x t. induction t ; cbn ; intros H.
-- rewrite elem_of_singleton in *. now subst.
-- now apply elem_of_empty in H.
-- rewrite elem_of_union in *. destruct H as [H1 | H2].
-  + left ; now apply IHt1.
-  + right ; now apply IHt2.
-- now apply IHt.
+clear x t ; intros x t.
+induction t ; cbn ; intros H ; set_solver.
 Qed.
 
 Lemma lc_swap a b t : lc (swap_term a b t) <-> lc t.
@@ -233,7 +225,7 @@ enough (forall t, lc t -> lc (swap_term a b t)).
 clear t ; intros t H. induction H ; cbn ; constructor ; auto.
 intros x Hx. specialize (H0 (swap_name a b x)).
 rewrite swap_term_open_var, swap_name_inv in H0. apply H0.
-rewrite <-(swap_term_inv a b t). now rewrite elem_of_fv_swap.
+rewrite <-(swap_term_inv a b t). by rewrite elem_of_fv_swap.
 Qed.
 
 (** Existentially quantified version of [lc_lam]. *)
@@ -242,47 +234,25 @@ Lemma lc_lam_intro x t :
 Proof.
 intros Hx H. apply lc_lam. intros y Hy.
 rewrite <-(lc_swap x y), swap_term_open_var, swap_name_left in H.
-now rewrite swap_term_free in H.
+by rewrite swap_term_free in H.
 Qed.
 
 Lemma fv_open_1 u t : fv t ⊆ fv (t ^^ u).
 Proof.
-generalize 0. intros k. induction t in k, u |- * ; cbn.
-- reflexivity.
-- apply empty_subseteq.
-- apply union_mono.
-  + apply IHt1.
-  + apply IHt2.
-- apply IHt.
+generalize 0. intros k. induction t in k, u |- * ; set_solver.
 Qed.
 
 Lemma fv_open_2 u t : fv (t ^^ u) ⊆ fv t ∪ fv u.
 Proof.
-generalize 0. intros k. induction t in k, u |- * ; cbn.
-- apply union_subseteq_l.
-- destruct (Nat.eqb_spec i k) ; subst.
-  + apply union_subseteq_r.
-  + cbn. apply empty_subseteq.
-- apply union_least.
-  + rewrite IHt1. apply union_least.
-    * apply union_subseteq_l', union_subseteq_l.
-    * apply union_subseteq_r.
-  + rewrite IHt2. apply union_least.
-    * apply union_subseteq_l', union_subseteq_r.
-    * apply union_subseteq_r.
-- apply IHt.
+generalize 0. intros k. induction t in k, u |- * ; cbn ; try set_solver.
+destruct (Nat.eqb_spec i k) ; set_solver.
 Qed.
 
 Lemma not_elem_of_fv_close t x :
   x ∉ fv (t \^ x).
 Proof.
-generalize 0. intros k. induction t in k, x |- * ; cbn.
-- destruct (eqb_name_spec x x0) ; subst ; cbn.
-  + apply not_elem_of_empty.
-  + now apply not_elem_of_singleton.
-- apply not_elem_of_empty.
-- rewrite not_elem_of_union. split ; [apply IHt1 | apply IHt2].
-- apply IHt.
+generalize 0. intros k. induction t in k, x |- * ; cbn ; try set_solver.
+destruct (eqb_name_spec x x0) ; set_solver.
 Qed.
 
 (*Lemma open_close x t u :
@@ -291,7 +261,7 @@ Proof.
 (*intros H. generalize 0. induction t in x, H |- * ; cbn.
 - destruct (eqb_name_spec x x0) ; subst ; cbn ; reflexivity.
 - inversion H.
-- inversion H ; subst. now rewrite IHt1, IHt2.*)
+- inversion H ; subst. by rewrite IHt1, IHt2.*)
 Admitted.*)
 
 Lemma open_close_same x t :
@@ -341,12 +311,12 @@ enough (forall t t', t ~~>₁ t' -> swap_term a b t ~~>₁ swap_term a b t').
   apply H. }
 clear t t' ; intros t t'. intros H. induction H ; cbn.
 - rewrite swap_term_open. apply red_beta.
-- now apply red_app_l.
-- now apply red_app_r.
+- by apply red_app_l.
+- by apply red_app_r.
 - apply red_lam. intros x Hx1 Hx2. specialize (H0 (swap_name a b x)).
   rewrite !swap_term_open_var, !swap_name_inv in H0. apply H0.
-  + rewrite <-(swap_term_inv a b t). now rewrite elem_of_fv_swap.
-  + rewrite <-(swap_term_inv a b t'). now rewrite elem_of_fv_swap.
+  + rewrite <-(swap_term_inv a b t). by rewrite elem_of_fv_swap.
+  + rewrite <-(swap_term_inv a b t'). by rewrite elem_of_fv_swap.
 Qed.
 
 Lemma swap_term_red_plus a b t t' :
@@ -356,7 +326,7 @@ enough (forall t t', t ~~>+ t' -> swap_term a b t ~~>+ swap_term a b t').
 { split ; [|apply H]. rewrite <-(swap_term_inv a b t), <-(swap_term_inv a b t') at 2.
   apply H. }
 clear t t' ; intros t t' H. induction H.
-- now apply red_plus_one, swap_term_red.
+- by apply red_plus_one, swap_term_red.
 - etransitivity ; eauto.
 Qed.
 
@@ -368,7 +338,7 @@ enough (forall t t', t ~~>* t' -> swap_term a b t ~~>* swap_term a b t').
   apply H. }
 clear t t' ; intros t t' H. induction H.
 - reflexivity.
-- now apply red_star_one, swap_term_red.
+- by apply red_star_one, swap_term_red.
 - etransitivity ; eauto.
 Qed.
 
@@ -376,7 +346,7 @@ Lemma red_lam_intro x t t' :
   x ∉ fv t -> x ∉ fv t' -> t ^ x ~~>₁ t' ^ x -> lam t ~~>₁ lam t'.
 Proof.
 intros Hx1 Hx2 H. apply red_lam. intros y Hy1 Hy2. apply (swap_term_red x y) in H.
-rewrite !swap_term_open_var, !swap_name_left in H. now rewrite !swap_term_free in H.
+rewrite !swap_term_open_var, !swap_name_left in H. by rewrite !swap_term_free in H.
 Qed.
 
 Lemma red_star_lam_intro x t t' :
@@ -384,7 +354,7 @@ Lemma red_star_lam_intro x t t' :
 Proof.
 intros Hx1 Hx2 H.
 (*intros Hx1 Hx2 H. remember (t ^ x) as tx. remember (t' ^ x) as tx'. induction H. apply red_lam. intros y Hy1 Hy2. apply (swap_red x y) in H.
-rewrite !swap_open_var, !swap_name_left in H. now rewrite !swap_free in H.*)
+rewrite !swap_open_var, !swap_name_left in H. by rewrite !swap_free in H.*)
 Admitted.
 
 (**************************************************************************)
@@ -409,11 +379,7 @@ Fixpoint domain (ctx : context) : gset name :=
 
 Lemma domain_app c1 c2 :
   domain (c1 ++ c2) = domain c1 ∪ domain c2.
-Proof.
-induction c1 as [|[x] c1 IH] ; cbn.
-- now rewrite union_empty_l_L.
-- now rewrite IH, union_assoc_L.
-Qed.
+Proof. induction c1 as [|[x] c1 IH] ; set_solver. Qed.
 
 (** A term is well-scoped iff all of its free variables appear in the context.
     In particular [bvar i] is never well-scoped. *)
@@ -432,36 +398,30 @@ Inductive well_scoped : context -> term -> Prop :=
 
 Lemma well_scoped_fvar_head x c :
   well_scoped (LDecl x :: c) (fvar x).
-Proof.
-constructor. cbn. now apply elem_of_union_l, elem_of_singleton.
-Qed.
+Proof. constructor. set_solver. Qed.
 #[export] Hint Resolve well_scoped_fvar_head : well_scoped.
 
 Lemma well_scoped_lc ctx t : well_scoped ctx t -> lc t.
 Proof.
 intros H. induction H.
 - constructor.
-- now constructor.
+- by constructor.
 - destruct (exist_fresh (fv t ∪ domain ctx)) as [x Hx].
-  apply not_elem_of_union in Hx. destruct Hx as [Hx1 Hx2].
-  apply lc_lam_intro with x ; try assumption. apply H0 ; assumption.
+  apply lc_lam_intro with x.
+  + set_solver.
+  + apply H0 ; set_solver.
 Qed.
 #[export] Hint Resolve well_scoped_lc : lc.
 
 Lemma well_scoped_fv ctx t :
   well_scoped ctx t -> fv t ⊆ domain ctx.
 Proof.
-intros H. induction H ; cbn.
-- now rewrite <-elem_of_subseteq_singleton.
-- now apply union_least.
-- destruct (exist_fresh (fv t ∪ domain ctx)) as [x Hx].
-  apply not_elem_of_union in Hx. destruct Hx as [Hx1 Hx2].
-  specialize (H0 x Hx1 Hx2). cbn in H0. intros y Hy.
-  assert (y ∈ fv (t ^ x)) as Hy'. { now apply fv_open_1. }
-  specialize (H0 y Hy').
-  rewrite elem_of_union in H0. destruct H0.
-  + rewrite elem_of_singleton in H0. subst. done.
-  + assumption.
+intros H. induction H ; cbn ; try set_solver.
+destruct (exist_fresh (fv t ∪ domain ctx)) as [x Hx].
+specialize (H0 x). feed H0. { set_solver. } feed H0. { set_solver. }
+cbn in H0. intros y Hy.
+assert (y ∈ fv (t ^ x)) as Hy'. { by apply fv_open_1. }
+specialize (H0 y Hy'). set_solver.
 Qed.
 
 Lemma well_scoped_weaken x c1 c2 t :
@@ -469,18 +429,12 @@ Lemma well_scoped_weaken x c1 c2 t :
 Proof.
 intros H. remember (c1 ++ c2) as c eqn:Hc.
 induction H in x, c1, c2, Hc |- * ; subst.
-- constructor. rewrite domain_app. cbn.
-  rewrite (union_comm_L {[x]}), union_assoc_L.
-  rewrite domain_app in H. now apply elem_of_union_l.
-- constructor.
-  + now apply IHwell_scoped1.
-  + now apply IHwell_scoped2.
+- constructor. rewrite domain_app in *. cbn. set_solver.
+- constructor ; auto.
 - constructor. intros y Hy Hy'. specialize (H0 y Hy). feed H0.
-  { rewrite domain_app in Hy' |- *. cbn in Hy'.
-    rewrite (union_comm_L {[x]}), union_assoc_L, not_elem_of_union in Hy'.
-    apply Hy'. }
-  specialize (H0 x (LDecl y :: c1) c2). feed H0. { now cbn. }
-  apply H0.
+  { rewrite domain_app in *. cbn in Hy'. set_solver. }
+  specialize (H0 x (LDecl y :: c1) c2). feed H0. { by cbn. }
+  by apply H0.
 Qed.
 
 Lemma well_scoped_weaken' x c t :
@@ -499,14 +453,14 @@ Lemma swap_context_inv a b c :
 Proof.
 induction c as [|[x] c IH] ; cbn.
 - reflexivity.
-- now rewrite IH, swap_name_inv.
+- by rewrite IH, swap_name_inv.
 Qed.
 
 Lemma swap_context_inj a b c c' :
   swap_context a b c = swap_context a b c' -> c = c'.
 Proof.
 intros H. apply (f_equal (swap_context a b)) in H.
-now rewrite !swap_context_inv in H.
+by rewrite !swap_context_inv in H.
 Qed.
 
 Lemma swap_context_free a b c :
@@ -514,21 +468,16 @@ Lemma swap_context_free a b c :
 Proof.
 intros Ha Hb. induction c as [|[x] c IH] ; cbn.
 - reflexivity.
-- cbn in Ha, Hb. rewrite not_elem_of_union, not_elem_of_singleton in Ha, Hb.
-  destruct Ha as [Ha1 Ha2]. destruct Hb as [Hb1 Hb2].
-  rewrite IH by assumption. now rewrite swap_name_free.
+- rewrite IH, swap_name_free ; set_solver.
 Qed.
 
 Lemma elem_of_domain_swap a b x ctx :
   swap_name a b x ∈ domain (swap_context a b ctx) <-> x ∈ domain ctx.
 Proof.
 induction ctx as [|[y] ctx IH] ; cbn.
-- split ; intros H ; now apply elem_of_empty in H.
-- rewrite !elem_of_union, IH, !elem_of_singleton. split ; intros [H1 | H2].
-  + left. now apply swap_name_inj in H1.
-  + now right.
-  + subst. now left.
-  + now right.
+- set_solver.
+- rewrite !elem_of_union, IH. split ; intros [H1 | H2] ; try set_solver.
+  set_unfold in H1. apply swap_name_inj in H1. set_solver.
 Qed.
 
 Lemma well_scoped_swap a b t ctx :
@@ -538,13 +487,13 @@ enough (forall ctx t, well_scoped ctx t -> well_scoped (swap_context a b ctx) (s
 { split ; [|apply H]. rewrite <-(swap_context_inv a b ctx), <-(swap_term_inv a b t) at 2.
   apply H. }
 clear t ctx ; intros ctx t H. induction H ; cbn.
-- constructor. now rewrite elem_of_domain_swap.
+- constructor. by rewrite elem_of_domain_swap.
 - constructor ; assumption.
 - constructor. intros x Hx1 Hx2. specialize (H0 (swap_name a b x)).
-  feed H0. { now rewrite <-(swap_term_inv a b t), elem_of_fv_swap. }
-  feed H0. { now rewrite <-(swap_context_inv a b ctx), elem_of_domain_swap. }
+  feed H0. { by rewrite <-(swap_term_inv a b t), elem_of_fv_swap. }
+  feed H0. { by rewrite <-(swap_context_inv a b ctx), elem_of_domain_swap. }
   cbn in H0. rewrite swap_term_open_var, !swap_name_inv in H0.
-  apply H0.
+  by apply H0.
 Qed.
 
 Lemma well_scoped_lam_intro x t ctx :
@@ -565,6 +514,7 @@ intros H1 H2. apply well_scoped_lam_intro with x.
 - assumption.
 - rewrite open_close_same ; eauto with lc.
 Qed.
+#[export] Hint Resolve well_scoped_lam_close : well_scoped.
 
 (**************************************************************************)
 (** *** Monadic programs. *)
@@ -753,44 +703,13 @@ induction n in k, t |- * ; intros ctx Φ [Ht Hk] HΦ ; cbn ; [constructor|].
 destruct t ; cbn.
 - apply HΦ. auto with well_scoped.
 - inversion Ht.
-- inversion Ht ; subst. wp_steps. intros x Hx.
-  wp_steps. intros y Hy. wp_steps.
-  assert (Hxy : y ≠ x).
-  { cbn in Hy. rewrite not_elem_of_union in Hy. destruct Hy as [Hy _].
-    now apply not_elem_of_singleton in Hy. }
-  apply IHn.
-  {
-    inversion Ht ; subst. split.
-    - auto with well_scoped.
-    - apply well_scoped_lam_intro with y.
-      + cbn. rewrite eqb_name_true, eqb_name_false by assumption. cbn.
-        apply not_elem_of_union. split.
-        * now apply not_elem_of_singleton.
-        * rewrite union_empty_l_L. apply not_elem_of_fv_close.
-      + assumption.
-      + rewrite open_close_same.
-        * auto with well_scoped.
-        * eauto with lc.
-  }
-  intros t' Ht'. apply IHn.
-  {
-    split.
-    - assumption.
-    - apply well_scoped_lam_intro with x.
-      + apply not_elem_of_fv_close.
-      + assumption.
-      + rewrite open_close_same.
-        * assumption.
-        * eauto with lc.
-  }
+- inversion Ht ; subst. wp_steps. intros x Hx. wp_steps. intros y Hy. wp_steps.
+  apply IHn. { inversion Ht ; subst. split ; auto 6 with well_scoped. }
+  intros t' Ht'. apply IHn. { auto with well_scoped. }
   intros t'' Ht''. apply HΦ. assumption.
 - wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
-  { split.
-    - inversion Ht ; subst. apply well_scoped_weaken'. apply H1 ; [|assumption].
-      apply well_scoped_fv in Ht. cbn in Ht. intros H'. now apply Hx, Ht.
-    - auto with well_scoped.
-  }
-  intros t' Ht'. wp_steps. apply HΦ. apply well_scoped_app ; [assumption|].
-  apply well_scoped_lam_close ; [assumption|].
-  apply well_scoped_lam_close ; assumption.
+  { split ; auto with well_scoped.
+    inversion Ht ; subst. apply well_scoped_weaken'. apply H1 ; [|assumption].
+    apply well_scoped_fv in Ht. set_solver. }
+  intros t' Ht'. wp_steps. apply HΦ. auto with well_scoped.
 Qed.
