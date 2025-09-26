@@ -4,12 +4,21 @@ From Equations Require Import Equations.
 From stdpp Require Import gmap.
 Import ListNotations.
 
-Ltac feed H :=
+(** If [H] is a hypothesis [H : P -> Q], [feed H] first asks to prove [P],
+    and then the original goal with [H : Q]. *)
+
+Ltac feed_aux H :=
   match type of H with
   | ?P -> ?Q =>
     let HP := fresh "H" in
     assert P as HP ; [| specialize (H HP) ; clear HP ]
   end.
+
+Tactic Notation "feed" ident(H) "by" tactic3(t) :=
+  feed_aux H ; [by t|].
+
+Tactic Notation "feed" ident(H) :=
+  feed_aux H.
 
 (**************************************************************************)
 (** *** Names of variables. *)
@@ -37,13 +46,56 @@ Lemma eqb_name_false n n' : n ≠ n' -> eqb_name n n' = false.
 Proof. intros H. destruct (eqb_name_spec n n') ; auto. by exfalso. Qed.
 
 (**************************************************************************)
-(** *** Swapping names. *)
+(** *** Nominal types. *)
+(**************************************************************************)
+
+(** A nominal type is a type which can contain names which can be renamed.
+    A prototypical example is [term] the type of lambda-terms. *)
+Class Nominal (T : Type) := mkNominal {
+  (** [swap a b t] swaps names [a] and [b] in [t]. *)
+  swap : name -> name -> T -> T ;
+  (** [fv t] returns the set of free variables in [t]. *)
+  fv : T -> gset name ;
+  (** [swap a b] should be involutive. *)
+  swap_inv a b t : swap a b (swap a b t) = t ;
+  (** Swapping free names does nothing. *)
+  swap_free a b t : a ∉ fv t -> b ∉ fv t -> swap a b t = t ;
+}.
+
+(** Because [swap a b] is involutive, it is injective. *)
+Lemma swap_inj {T} `{NT : Nominal T} a b (t t' : T) :
+  swap a b t = swap a b t' -> t = t'.
+Proof.
+intros H. apply (f_equal (swap a b)) in H.
+by rewrite !swap_inv in H.
+Qed.
+
+(**************************************************************************)
+(** *** Names are a trivially nominal. *)
 (**************************************************************************)
 
 Definition swap_name (a b x : name) : name :=
   if eqb_name x a then b
   else if eqb_name x b then a
   else x.
+
+Definition fv_name (x : name) : gset name :=
+  {[ x ]}.
+
+(** This instance enables stdpp's [set_unfold] tactic to simplify
+    [x ∈ fv_name y] (or [x ∈ fv y]) into [x = y]. *)
+#[export] Instance set_unfold_fv_name x y :
+  SetUnfoldElemOf x (fv_name y) (x = y).
+Proof. constructor. unfold fv_name. set_solver. Qed.
+
+Lemma swap_name_left a b : swap_name a b a = b.
+Proof. cbn. unfold swap_name. by rewrite eqb_name_true. Qed.
+
+Lemma swap_name_right a b : swap_name a b b = a.
+Proof.
+cbn. unfold swap_name. destruct (eqb_name_spec b a) ; auto.
+by rewrite eqb_name_true.
+Qed.
 
 Lemma swap_name_inv a b x :
   swap_name a b (swap_name a b x) = x.
@@ -53,29 +105,19 @@ unfold swap_name. destruct (eqb_name_spec x a) ; subst.
 - destruct (eqb_name_spec x b) ; subst.
   + by rewrite eqb_name_true.
   + by rewrite eqb_name_false, eqb_name_false by assumption.
-Defined.
-
-Lemma swap_name_inj a b x x' :
-  swap_name a b x = swap_name a b x' -> x = x'.
-Proof.
-intros H1. apply (f_equal (swap_name a b)) in H1.
-by rewrite !swap_name_inv in H1.
-Qed.
-
-Lemma swap_name_left a b : swap_name a b a = b.
-Proof. cbn. unfold swap_name. by rewrite eqb_name_true. Qed.
-
-Lemma swap_name_right a b : swap_name a b b = a.
-Proof. cbn. unfold swap_name. destruct (eqb_name_spec b a) ; auto.
-by rewrite eqb_name_true.
 Qed.
 
 Lemma swap_name_free a b x :
-  x ≠ a -> x ≠ b -> swap_name a b x = x.
-Proof. intros Ha Hb. cbn. unfold swap_name. by rewrite eqb_name_false, eqb_name_false. Qed.
+  a ∉ fv_name x -> b ∉ fv_name x -> swap_name a b x = x.
+Proof.
+intros Ha Hb. unfold swap_name. rewrite !eqb_name_false ; set_solver.
+Qed.
+
+#[export] Instance name_Nominal : Nominal name :=
+  mkNominal name swap_name fv_name swap_name_inv swap_name_free.
 
 (**************************************************************************)
-(** *** Lambda terms and basic operations. *)
+(** *** Lambda terms, as a nominal type. *)
 (**************************************************************************)
 
 (** Untyped lambda terms in the locally nameless style. *)
@@ -93,14 +135,37 @@ Fixpoint swap_term (a b : name) (t : term) : term :=
   | lam t => lam (swap_term a b t)
   end.
 
-(** [fv t] computes the set of free variables in [t]. *)
-Fixpoint fv (t : term) : gset name :=
+Fixpoint fv_term (t : term) : gset name :=
   match t with
   | fvar x => {[ x ]}
   | bvar i => ∅
-  | app t1 t2 => fv t1 ∪ fv t2
-  | lam t => fv t
+  | app t1 t2 => fv_term t1 ∪ fv_term t2
+  | lam t => fv_term t
   end.
+
+Lemma swap_term_inv a b t :
+  swap_term a b (swap_term a b t) = t.
+Proof.
+induction t ; cbn ; try congruence.
+by rewrite swap_name_inv.
+Qed.
+
+Lemma swap_term_free a b t :
+  a ∉ fv_term t -> b ∉ fv_term t -> swap_term a b t = t.
+Proof.
+intros Ha Hb. induction t ; cbn in *.
+- rewrite swap_name_free ; set_solver.
+- constructor.
+- rewrite IHt1, IHt2 ; set_solver.
+- by rewrite IHt.
+Qed.
+
+#[export] Instance term_Nominal : Nominal term :=
+  mkNominal term swap_term fv_term swap_term_inv swap_term_free.
+
+(**************************************************************************)
+(** *** Basic operations on lambda terms. *)
+(**************************************************************************)
 
 Fixpoint open (n : nat) (u : term) (t : term) : term :=
   match t with
@@ -126,7 +191,7 @@ Fixpoint close (n : nat) (x : name) (t : term) : term :=
 (** [t \^ x] replaces variable [x] with de Bruijn index [0] in [t]. *)
 Notation "t '\^' x" := (close 0 x t) (at level 30, no associativity).
 
-(** [subst x u t] substitutes [x] with [u] in [t].
+(*(** [subst x u t] substitutes [x] with [u] in [t].
     It assumes [u] and [t] are locally closed, so there is no need for lifting. *)
 Fixpoint subst (x : name) (u : term) (t : term) : term :=
   match t with
@@ -137,7 +202,7 @@ Fixpoint subst (x : name) (u : term) (t : term) : term :=
   end.
 
 Notation "'{' x '~>' u '}' t" := (subst x u t)
-  (at level 20, left associativity, format "{ x  ~>  u } t").
+  (at level 20, left associativity, format "{ x  ~>  u } t").*)
 
 (** A term is locally closed iff all its de Bruijn indices have
     a corresponding binder.
@@ -159,73 +224,53 @@ Inductive lc : term -> Prop :=
 (** *** Basic lemmas. *)
 (**************************************************************************)
 
-Lemma swap_term_inv a b t :
-  swap_term a b (swap_term a b t) = t.
+Lemma open_proper_swap a b t u :
+  swap a b (t ^^ u) = (swap a b t) ^^ (swap a b u).
 Proof.
-induction t ; cbn ; try congruence.
-by rewrite swap_name_inv.
-Qed.
-
-Lemma swap_term_inj a b t t' :
-  swap_term a b t = swap_term a b t' -> t = t'.
-Proof.
-intros H. apply (f_equal (swap_term a b)) in H.
-by rewrite !swap_term_inv in H.
-Qed.
-
-Lemma swap_term_free a b t :
-  a ∉ fv t -> b ∉ fv t -> swap_term a b t = t.
-Proof.
-intros Ha Hb. induction t ; cbn in *.
-- rewrite swap_name_free ; set_solver.
-- constructor.
-- rewrite IHt1, IHt2 ; set_solver.
+generalize 0. induction t ; intros k ; cbn.
+- reflexivity.
+- by destruct (Nat.eqb_spec i k).
+- by rewrite IHt1, IHt2.
 - by rewrite IHt.
 Qed.
 
-Lemma swap_term_open a b t u :
-  swap_term a b (t ^^ u) = (swap_term a b t) ^^ (swap_term a b u).
-Proof.
-generalize 0. induction t ; intros k ; cbn ; try congruence.
-by destruct (Nat.eqb_spec i k).
-Qed.
+Lemma open_var_proper_swap a b t x :
+  swap a b (t ^ x) = (swap a b t) ^ (swap a b x).
+Proof. by rewrite open_proper_swap. Qed.
 
-Lemma swap_term_open_var a b t x :
-  swap_term a b (t ^ x) = (swap_term a b t) ^ (swap_name a b x).
-Proof. by rewrite swap_term_open. Qed.
-
-Lemma swap_term_close a b t x :
-  swap_term a b (t \^ x) = (swap_term a b t) \^ (swap_name a b x).
+Lemma close_proper_swap a b t x :
+  swap a b (t \^ x) = (swap a b t) \^ (swap a b x).
 Proof.
 generalize 0. induction t ; intros k ; cbn.
 - destruct (eqb_name_spec x x0) ; subst ; cbn.
   + by rewrite eqb_name_true.
   + rewrite eqb_name_false.
     * reflexivity.
-    * intros H. apply n. by apply swap_name_inj in H.
+    * intros H. apply n. change swap_name with (@swap name name_Nominal) in H.
+      by apply swap_inj in H.
 - reflexivity.
-- rewrite IHt1, IHt2. reflexivity.
-- rewrite IHt. reflexivity.
+- by rewrite IHt1, IHt2.
+- by rewrite IHt.
 Qed.
 
-Lemma elem_of_fv_swap x a b t :
-  swap_name a b x ∈ fv (swap_term a b t) <-> x ∈ fv t.
+Lemma fv_term_proper_swap x a b t :
+  swap a b x ∈ fv (swap a b t) <-> x ∈ fv t.
 Proof.
-enough (forall x t, x ∈ fv t -> swap_name a b x ∈ fv (swap_term a b t)).
-{ split ; [|apply H]. rewrite <-(swap_name_inv a b x), <-(swap_term_inv a b t) at 2.
+enough (forall x t, x ∈ fv t -> swap a b x ∈ fv (swap a b t)).
+{ split ; [|apply H]. rewrite <-(swap_inv a b x), <-(swap_inv a b t) at 2.
   apply H. }
 clear x t ; intros x t.
 induction t ; cbn ; intros H ; set_solver.
 Qed.
 
-Lemma lc_swap a b t : lc (swap_term a b t) <-> lc t.
+Lemma lc_proper_swap a b t : lc (swap a b t) <-> lc t.
 Proof.
-enough (forall t, lc t -> lc (swap_term a b t)).
-{ split ; [|apply H]. rewrite <-(swap_term_inv a b t) at 2. apply H. }
+enough (forall t, lc t -> lc (swap a b t)).
+{ split ; [|apply H]. rewrite <-(swap_inv a b t) at 2. apply H. }
 clear t ; intros t H. induction H ; cbn ; constructor ; auto.
-intros x Hx. specialize (H0 (swap_name a b x)).
-rewrite swap_term_open_var, swap_name_inv in H0. apply H0.
-rewrite <-(swap_term_inv a b t). by rewrite elem_of_fv_swap.
+intros x Hx. specialize (H0 (swap a b x)).
+rewrite open_var_proper_swap, swap_inv in H0. apply H0.
+rewrite <-(swap_inv a b t). by rewrite fv_term_proper_swap.
 Qed.
 
 (** Existentially quantified version of [lc_lam]. *)
@@ -233,14 +278,12 @@ Lemma lc_lam_intro x t :
   x ∉ fv t -> lc (t ^ x) -> lc (lam t).
 Proof.
 intros Hx H. apply lc_lam. intros y Hy.
-rewrite <-(lc_swap x y), swap_term_open_var, swap_name_left in H.
-by rewrite swap_term_free in H.
+rewrite <-(lc_proper_swap x y), open_var_proper_swap, swap_name_left in H.
+by rewrite swap_free in H.
 Qed.
 
 Lemma fv_open_1 u t : fv t ⊆ fv (t ^^ u).
-Proof.
-generalize 0. intros k. induction t in k, u |- * ; set_solver.
-Qed.
+Proof. generalize 0. intros k. induction t in k, u |- * ; set_solver. Qed.
 
 Lemma fv_open_2 u t : fv (t ^^ u) ⊆ fv t ∪ fv u.
 Proof.
@@ -272,7 +315,7 @@ Proof. Admitted.
 (** *** Reduction relation. *)
 (**************************************************************************)
 
-Reserved Notation "t '~~>₁' u" (at level 60, no associativity).
+(*Reserved Notation "t '~~>₁' u" (at level 60, no associativity).
 Reserved Notation "t '~~>+' u" (at level 60, no associativity).
 Reserved Notation "t '~~>*' u" (at level 60, no associativity).
 
@@ -355,43 +398,93 @@ Proof.
 intros Hx1 Hx2 H.
 (*intros Hx1 Hx2 H. remember (t ^ x) as tx. remember (t' ^ x) as tx'. induction H. apply red_lam. intros y Hy1 Hy2. apply (swap_red x y) in H.
 rewrite !swap_open_var, !swap_name_left in H. by rewrite !swap_free in H.*)
-Admitted.
+Admitted.*)
 
 (**************************************************************************)
 (** *** Contexts and well-scoped terms. *)
 (**************************************************************************)
 
-(* Local declaration (no body). *)
-Inductive local_decl :=
-| LDecl : name -> local_decl.
+(** Local declaration (no body). *)
+Inductive ldecl :=
+| LDecl : name -> ldecl.
+
+Definition swap_ldecl (a b : name) (d : ldecl) : ldecl :=
+  match d with
+  | LDecl x => LDecl (swap a b x)
+  end.
+
+Definition fv_ldecl (d : ldecl) : gset name :=
+  match d with
+  | LDecl x => fv x
+  end.
+
+Lemma swap_ldecl_inv a b d :
+  swap_ldecl a b (swap_ldecl a b d) = d.
+Proof. destruct d as [x] ; cbn. by rewrite (@swap_inv _ name_Nominal). Qed.
+
+Lemma swap_ldecl_free a b d :
+  a ∉ fv_ldecl d -> b ∉ fv_ldecl d -> swap_ldecl a b d = d.
+Proof. intros Ha Hb. destruct d. cbn. rewrite swap_name_free ; set_solver. Qed.
+
+#[export] Instance ldecl_Nominal : Nominal ldecl :=
+  mkNominal ldecl swap_ldecl fv_ldecl swap_ldecl_inv swap_ldecl_free.
 
 (** A local context stores the declarations of all free variables
     in scope. The most recent declaration is at the head of the list. *)
-Definition context := list local_decl.
+Definition context := list ldecl.
 
-(** The domain of a context is the set of variables which are bound
-    by the context. *)
-Fixpoint domain (ctx : context) : gset name :=
-  match ctx with
-  | nil => ∅
-  | LDecl x :: ctx => {[ x ]} ∪ domain ctx
+Fixpoint swap_context (a b : name) (c : context) : context :=
+  match c with
+  | nil => nil
+  | d :: c => swap a b d :: swap_context a b c
   end.
 
-Lemma domain_app c1 c2 :
-  domain (c1 ++ c2) = domain c1 ∪ domain c2.
-Proof. induction c1 as [|[x] c1 IH] ; set_solver. Qed.
+Fixpoint fv_context (ctx : context) : gset name :=
+  match ctx with
+  | nil => ∅
+  | d :: ctx => fv d ∪ fv_context ctx
+  end.
+
+Lemma swap_context_inv a b c :
+  swap_context a b (swap_context a b c) = c.
+Proof.
+induction c ; cbn.
+- reflexivity.
+- by rewrite IHc, (@swap_inv ldecl ldecl_Nominal).
+Qed.
+
+Lemma swap_context_free a b c :
+  a ∉ fv_context c -> b ∉ fv_context c -> swap_context a b c = c.
+Proof.
+intros Ha Hb. induction c ; cbn.
+- reflexivity.
+- rewrite IHc, (@swap_free ldecl ldecl_Nominal) ; set_solver.
+Qed.
+
+#[export] Instance context_Nominal : Nominal context :=
+  mkNominal context swap_context fv_context swap_context_inv swap_context_free.
+
+Lemma fv_context_app (c1 c2 : context) :
+  fv (c1 ++ c2) = fv c1 ∪ fv c2.
+Proof. induction c1 ; set_solver. Qed.
+
+(** Hook into stdpp's [set_unfold] tactic. *)
+#[export] Instance set_unfold_fv_context_app x (c1 c2 : context) P :
+  SetUnfoldElemOf x (fv c1 ∪ fv c2) P ->
+  SetUnfoldElemOf x (fv (c1 ++ c2)) P.
+Proof. intros H. constructor. rewrite fv_context_app. set_solver. Qed.
 
 (** A term is well-scoped iff all of its free variables appear in the context.
     In particular [bvar i] is never well-scoped. *)
 Inductive well_scoped : context -> term -> Prop :=
 | well_scoped_fvar ctx x :
-    x ∈ domain ctx -> well_scoped ctx (fvar x)
+    x ∈ fv ctx -> well_scoped ctx (fvar x)
 | well_scoped_app ctx t1 t2 :
     well_scoped ctx t1 ->
     well_scoped ctx t2 ->
     well_scoped ctx (app t1 t2)
 | well_scoped_lam ctx t :
-    (forall x, x ∉ fv t -> x ∉ domain ctx -> well_scoped (LDecl x :: ctx) (t ^ x)) ->
+    (forall x, x ∉ fv t -> x ∉ fv ctx -> well_scoped (LDecl x :: ctx) (t ^ x)) ->
     well_scoped ctx (lam t).
 
 #[export] Hint Resolve well_scoped_fvar well_scoped_app : well_scoped.
@@ -406,19 +499,17 @@ Proof.
 intros H. induction H.
 - constructor.
 - by constructor.
-- destruct (exist_fresh (fv t ∪ domain ctx)) as [x Hx].
-  apply lc_lam_intro with x.
-  + set_solver.
-  + apply H0 ; set_solver.
+- destruct (exist_fresh (fv t ∪ fv ctx)) as [x Hx].
+  apply lc_lam_intro with x ; set_solver.
 Qed.
 #[export] Hint Resolve well_scoped_lc : lc.
 
 Lemma well_scoped_fv ctx t :
-  well_scoped ctx t -> fv t ⊆ domain ctx.
+  well_scoped ctx t -> fv t ⊆ fv ctx.
 Proof.
 intros H. induction H ; cbn ; try set_solver.
-destruct (exist_fresh (fv t ∪ domain ctx)) as [x Hx].
-specialize (H0 x). feed H0. { set_solver. } feed H0. { set_solver. }
+destruct (exist_fresh (fv t ∪ fv ctx)) as [x Hx].
+specialize (H0 x). feed H0 by set_solver. feed H0 by set_solver.
 cbn in H0. intros y Hy.
 assert (y ∈ fv (t ^ x)) as Hy'. { by apply fv_open_1. }
 specialize (H0 y Hy'). set_solver.
@@ -429,12 +520,10 @@ Lemma well_scoped_weaken x c1 c2 t :
 Proof.
 intros H. remember (c1 ++ c2) as c eqn:Hc.
 induction H in x, c1, c2, Hc |- * ; subst.
-- constructor. rewrite domain_app in *. cbn. set_solver.
+- constructor. set_solver.
 - constructor ; auto.
-- constructor. intros y Hy Hy'. specialize (H0 y Hy). feed H0.
-  { rewrite domain_app in *. cbn in Hy'. set_solver. }
-  specialize (H0 x (LDecl y :: c1) c2). feed H0. { by cbn. }
-  by apply H0.
+- constructor. intros y Hy Hy'. specialize (H0 y Hy). feed H0 by set_solver.
+  specialize (H0 x (LDecl y :: c1) c2). feed H0 by cbn. by apply H0.
 Qed.
 
 Lemma well_scoped_weaken' x c t :
@@ -442,72 +531,44 @@ Lemma well_scoped_weaken' x c t :
 Proof. apply (well_scoped_weaken x [] c t). Qed.
 #[export] Hint Resolve well_scoped_weaken' : well_scoped.
 
-Fixpoint swap_context (a b : name) (c : context) : context :=
-  match c with
-  | nil => nil
-  | LDecl x :: c => LDecl (swap_name a b x) :: swap_context a b c
-  end.
-
-Lemma swap_context_inv a b c :
-  swap_context a b (swap_context a b c) = c.
-Proof.
-induction c as [|[x] c IH] ; cbn.
-- reflexivity.
-- by rewrite IH, swap_name_inv.
-Qed.
-
-Lemma swap_context_inj a b c c' :
-  swap_context a b c = swap_context a b c' -> c = c'.
-Proof.
-intros H. apply (f_equal (swap_context a b)) in H.
-by rewrite !swap_context_inv in H.
-Qed.
-
-Lemma swap_context_free a b c :
-  a ∉ domain c -> b ∉ domain c -> swap_context a b c = c.
-Proof.
-intros Ha Hb. induction c as [|[x] c IH] ; cbn.
-- reflexivity.
-- rewrite IH, swap_name_free ; set_solver.
-Qed.
-
-Lemma elem_of_domain_swap a b x ctx :
-  swap_name a b x ∈ domain (swap_context a b ctx) <-> x ∈ domain ctx.
+Lemma fv_context_proper_swap a b x ctx :
+  swap a b x ∈ fv (swap a b ctx) <-> x ∈ fv ctx.
 Proof.
 induction ctx as [|[y] ctx IH] ; cbn.
 - set_solver.
-- rewrite !elem_of_union, IH. split ; intros [H1 | H2] ; try set_solver.
-  set_unfold in H1. apply swap_name_inj in H1. set_solver.
+- set_unfold. rewrite IH. split ; intros [H1 | H2] ; try set_solver.
+  apply (@swap_inj name name_Nominal) in H1. now left.
 Qed.
 
-Lemma well_scoped_swap a b t ctx :
-  well_scoped (swap_context a b ctx) (swap_term a b t) <-> well_scoped ctx t.
+Lemma well_scoped_proper_swap a b t ctx :
+  well_scoped (swap a b ctx) (swap a b t) <-> well_scoped ctx t.
 Proof.
-enough (forall ctx t, well_scoped ctx t -> well_scoped (swap_context a b ctx) (swap_term a b t)).
-{ split ; [|apply H]. rewrite <-(swap_context_inv a b ctx), <-(swap_term_inv a b t) at 2.
+enough (forall ctx t, well_scoped ctx t -> well_scoped (swap a b ctx) (swap a b t)).
+{ split ; [|apply H]. rewrite <-(swap_inv a b ctx), <-(swap_inv a b t) at 2.
   apply H. }
 clear t ctx ; intros ctx t H. induction H ; cbn.
-- constructor. by rewrite elem_of_domain_swap.
+- constructor. by rewrite fv_context_proper_swap.
 - constructor ; assumption.
-- constructor. intros x Hx1 Hx2. specialize (H0 (swap_name a b x)).
-  feed H0. { by rewrite <-(swap_term_inv a b t), elem_of_fv_swap. }
-  feed H0. { by rewrite <-(swap_context_inv a b ctx), elem_of_domain_swap. }
-  cbn in H0. rewrite swap_term_open_var, !swap_name_inv in H0.
+- constructor. intros x Hx1 Hx2. specialize (H0 (swap a b x)).
+  feed H0 by rewrite <-(swap_inv a b t), fv_term_proper_swap.
+  feed H0 by rewrite <-(swap_inv a b ctx), fv_context_proper_swap.
+  cbn in H0. rewrite open_var_proper_swap, !(@swap_inv name name_Nominal) in H0.
   by apply H0.
 Qed.
 
 Lemma well_scoped_lam_intro x t ctx :
-  x ∉ fv t -> x ∉ domain ctx -> well_scoped (LDecl x :: ctx) (t ^ x) ->
+  x ∉ fv t -> x ∉ fv ctx -> well_scoped (LDecl x :: ctx) (t ^ x) ->
   well_scoped ctx (lam t).
 Proof.
 intros Hx1 Hx2 H. constructor. intros y Hy1 Hy2.
-rewrite <-(well_scoped_swap x y). cbn. rewrite swap_name_right.
-rewrite swap_context_free, swap_term_open_var, swap_name_right, swap_term_free by assumption.
+rewrite <-(well_scoped_proper_swap x y). cbn. rewrite swap_name_right.
+rewrite open_var_proper_swap, swap_name_right.
+rewrite (@swap_free context context_Nominal), (@swap_free term term_Nominal) by assumption.
 exact H.
 Qed.
 
 Lemma well_scoped_lam_close ctx t x :
-  x ∉ domain ctx -> well_scoped (LDecl x :: ctx) t -> well_scoped ctx (lam (t \^ x)).
+  x ∉ fv ctx -> well_scoped (LDecl x :: ctx) t -> well_scoped ctx (lam (t \^ x)).
 Proof.
 intros H1 H2. apply well_scoped_lam_intro with x.
 - apply not_elem_of_fv_close.
@@ -567,7 +628,7 @@ Definition put_ctx (ctx : context) : M unit :=
 
 (** Extend the local context with a new local declaration,
     run a computation, and restore the local context. *)
-Definition with_decl {A} (d : local_decl) (m : M A) : M A :=
+Definition with_decl {A} (d : ldecl) (m : M A) : M A :=
   let* ctx := get_ctx in
   let* _ := put_ctx (d :: ctx) in
   let* a := m in
@@ -632,11 +693,11 @@ Lemma wp_with_decl {A} ctx Φ d (m : M A) :
 Proof. cbv. destruct (m (d :: ctx)) as [[a ctx'] | |] ; auto. Qed.
 
 Lemma wp_fresh_name ctx Φ :
-  (forall x, x ∉ domain ctx -> Φ ctx x) -> wp ctx fresh_name Φ.
+  (forall x, x ∉ fv ctx -> Φ ctx x) -> wp ctx fresh_name Φ.
 Proof. Admitted.
 
 Lemma wp_mk_lambda f ctx Φ :
-  (forall x, x ∉ domain ctx ->
+  (forall x, x ∉ fv ctx ->
     wp (LDecl x :: ctx) (f x) (fun _ body => Φ ctx (lam (body \^ x)))) ->
   wp ctx (mk_lambda f) Φ.
 Proof.
