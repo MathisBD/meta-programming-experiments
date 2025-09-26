@@ -45,48 +45,10 @@ Proof. destruct (eqb_name_spec n n) ; auto. Qed.
 Lemma eqb_name_false n n' : n ≠ n' -> eqb_name n n' = false.
 Proof. intros H. destruct (eqb_name_spec n n') ; auto. by exfalso. Qed.
 
-(**************************************************************************)
-(** *** Nominal types. *)
-(**************************************************************************)
-
-(** A nominal type is a type which can contain names which can be renamed.
-    A prototypical example is [term] the type of lambda-terms. *)
-Class Nominal (T : Type) := mkNominal {
-  (** [swap a b t] swaps names [a] and [b] in [t]. *)
-  swap : name -> name -> T -> T ;
-  (** [fv t] returns the set of free variables in [t]. *)
-  fv : T -> gset name ;
-  (** [swap a b] should be involutive. *)
-  swap_inv a b t : swap a b (swap a b t) = t ;
-  (** Swapping free names does nothing. *)
-  swap_free a b t : a ∉ fv t -> b ∉ fv t -> swap a b t = t ;
-}.
-
-(** Because [swap a b] is involutive, it is injective. *)
-Lemma swap_inj {T} `{NT : Nominal T} a b (t t' : T) :
-  swap a b t = swap a b t' -> t = t'.
-Proof.
-intros H. apply (f_equal (swap a b)) in H.
-by rewrite !swap_inv in H.
-Qed.
-
-(**************************************************************************)
-(** *** Names are a trivially nominal. *)
-(**************************************************************************)
-
 Definition swap_name (a b x : name) : name :=
   if eqb_name x a then b
   else if eqb_name x b then a
   else x.
-
-Definition fv_name (x : name) : gset name :=
-  {[ x ]}.
-
-(** This instance enables stdpp's [set_unfold] tactic to simplify
-    [x ∈ fv_name y] (or [x ∈ fv y]) into [x = y]. *)
-#[export] Instance set_unfold_fv_name x y :
-  SetUnfoldElemOf x (fv_name y) (x = y).
-Proof. constructor. unfold fv_name. set_solver. Qed.
 
 Lemma swap_name_left a b : swap_name a b a = b.
 Proof. cbn. unfold swap_name. by rewrite eqb_name_true. Qed.
@@ -107,14 +69,67 @@ unfold swap_name. destruct (eqb_name_spec x a) ; subst.
   + by rewrite eqb_name_false, eqb_name_false by assumption.
 Qed.
 
+(**************************************************************************)
+(** *** Nominal types. *)
+(**************************************************************************)
+
+(** A nominal type is a type which can contain names which can be renamed.
+    A prototypical example is [term] the type of lambda-terms. *)
+Class Nominal (T : Type) := mkNominal {
+  (** [swap a b t] swaps names [a] and [b] in [t]. *)
+  swap : name -> name -> T -> T ;
+  (** [fv t] returns the set of free variables in [t]. *)
+  fv : T -> gset name ;
+  (** [swap a b] is be involutive. *)
+  swap_inv a b t : swap a b (swap a b t) = t ;
+  (** Swapping interacts well with free variables. *)
+  swap_fv a b x t : x ∈ fv t -> swap_name a b x ∈ fv (swap a b t) ;
+  (** Swapping free names does nothing. *)
+  swap_free a b t : a ∉ fv t -> b ∉ fv t -> swap a b t = t
+}.
+
+(** Because [swap a b] is involutive, it is injective. *)
+Lemma swap_inj {T} `{NT : Nominal T} a b (t t' : T) :
+  swap a b t = swap a b t' -> t = t'.
+Proof.
+intros H. apply (f_equal (swap a b)) in H.
+by rewrite !swap_inv in H.
+Qed.
+
+(** Slightly stronger version [swap_fv], useful for rewriting. *)
+Lemma swap_fv_iff {T} `{NT : Nominal T} a b x (t : T) :
+  swap_name a b x ∈ fv (swap a b t) <-> x ∈ fv t.
+Proof.
+split ; [|apply swap_fv].
+rewrite <-(swap_name_inv a b x), <-(swap_inv a b t) at 2.
+apply swap_fv.
+Qed.
+
+(**************************************************************************)
+(** *** Names are a trivially nominal. *)
+(**************************************************************************)
+
+Definition fv_name (x : name) : gset name :=
+  {[ x ]}.
+
+(** This instance enables stdpp's [set_unfold] tactic to simplify
+    [x ∈ fv_name y] (or [x ∈ fv y]) into [x = y]. *)
+#[export] Instance set_unfold_fv_name x y :
+  SetUnfoldElemOf x (fv_name y) (x = y).
+Proof. constructor. unfold fv_name. set_solver. Qed.
+
 Lemma swap_name_free a b x :
   a ∉ fv_name x -> b ∉ fv_name x -> swap_name a b x = x.
 Proof.
 intros Ha Hb. unfold swap_name. rewrite !eqb_name_false ; set_solver.
 Qed.
 
+Lemma swap_name_fv a b x y :
+  x ∈ fv_name y -> swap_name a b x ∈ fv_name (swap_name a b y).
+Proof. set_unfold. by intros ->. Qed.
+
 #[export] Instance name_Nominal : Nominal name :=
-  mkNominal name swap_name fv_name swap_name_inv swap_name_free.
+  mkNominal name swap_name fv_name swap_name_inv swap_name_fv swap_name_free.
 
 (**************************************************************************)
 (** *** Lambda terms, as a nominal type. *)
@@ -150,6 +165,10 @@ induction t ; cbn ; try congruence.
 by rewrite swap_name_inv.
 Qed.
 
+Lemma swap_term_fv a b x t :
+  x ∈ fv_term t -> swap a b x ∈ fv_term (swap_term a b t).
+Proof. induction t ; cbn ; intros H ; set_solver. Qed.
+
 Lemma swap_term_free a b t :
   a ∉ fv_term t -> b ∉ fv_term t -> swap_term a b t = t.
 Proof.
@@ -161,7 +180,7 @@ intros Ha Hb. induction t ; cbn in *.
 Qed.
 
 #[export] Instance term_Nominal : Nominal term :=
-  mkNominal term swap_term fv_term swap_term_inv swap_term_free.
+  mkNominal term swap_term fv_term swap_term_inv swap_term_fv swap_term_free.
 
 (**************************************************************************)
 (** *** Basic operations on lambda terms. *)
@@ -253,16 +272,6 @@ generalize 0. induction t ; intros k ; cbn.
 - by rewrite IHt.
 Qed.
 
-Lemma fv_term_proper_swap x a b t :
-  swap a b x ∈ fv (swap a b t) <-> x ∈ fv t.
-Proof.
-enough (forall x t, x ∈ fv t -> swap a b x ∈ fv (swap a b t)).
-{ split ; [|apply H]. rewrite <-(swap_inv a b x), <-(swap_inv a b t) at 2.
-  apply H. }
-clear x t ; intros x t.
-induction t ; cbn ; intros H ; set_solver.
-Qed.
-
 Lemma lc_proper_swap a b t : lc (swap a b t) <-> lc t.
 Proof.
 enough (forall t, lc t -> lc (swap a b t)).
@@ -270,7 +279,7 @@ enough (forall t, lc t -> lc (swap a b t)).
 clear t ; intros t H. induction H ; cbn ; constructor ; auto.
 intros x Hx. specialize (H0 (swap a b x)).
 rewrite open_var_proper_swap, swap_inv in H0. apply H0.
-rewrite <-(swap_inv a b t). by rewrite fv_term_proper_swap.
+rewrite <-(swap_inv a b t). by rewrite swap_fv_iff.
 Qed.
 
 (** Existentially quantified version of [lc_lam]. *)
@@ -422,12 +431,16 @@ Lemma swap_ldecl_inv a b d :
   swap_ldecl a b (swap_ldecl a b d) = d.
 Proof. destruct d as [x] ; cbn. by rewrite (@swap_inv _ name_Nominal). Qed.
 
+Lemma swap_ldecl_fv a b x d :
+  x ∈ fv_ldecl d -> swap a b x ∈ fv_ldecl (swap_ldecl a b d).
+Proof. destruct d. set_solver. Qed.
+
 Lemma swap_ldecl_free a b d :
   a ∉ fv_ldecl d -> b ∉ fv_ldecl d -> swap_ldecl a b d = d.
 Proof. intros Ha Hb. destruct d. cbn. rewrite swap_name_free ; set_solver. Qed.
 
 #[export] Instance ldecl_Nominal : Nominal ldecl :=
-  mkNominal ldecl swap_ldecl fv_ldecl swap_ldecl_inv swap_ldecl_free.
+  mkNominal ldecl swap_ldecl fv_ldecl swap_ldecl_inv swap_ldecl_fv swap_ldecl_free.
 
 (** A local context stores the declarations of all free variables
     in scope. The most recent declaration is at the head of the list. *)
@@ -453,6 +466,14 @@ induction c ; cbn.
 - by rewrite IHc, (@swap_inv ldecl ldecl_Nominal).
 Qed.
 
+Lemma swap_context_fv a b x c :
+  x ∈ fv_context c -> swap a b x ∈ fv_context (swap_context a b c).
+Proof.
+intros H. induction c ; cbn.
+- set_solver.
+- set_unfold. rewrite (@swap_fv_iff ldecl ldecl_Nominal). set_solver.
+Qed.
+
 Lemma swap_context_free a b c :
   a ∉ fv_context c -> b ∉ fv_context c -> swap_context a b c = c.
 Proof.
@@ -462,7 +483,7 @@ intros Ha Hb. induction c ; cbn.
 Qed.
 
 #[export] Instance context_Nominal : Nominal context :=
-  mkNominal context swap_context fv_context swap_context_inv swap_context_free.
+  mkNominal context swap_context fv_context swap_context_inv swap_context_fv swap_context_free.
 
 Lemma fv_context_app (c1 c2 : context) :
   fv (c1 ++ c2) = fv c1 ∪ fv c2.
@@ -531,15 +552,6 @@ Lemma well_scoped_weaken' x c t :
 Proof. apply (well_scoped_weaken x [] c t). Qed.
 #[export] Hint Resolve well_scoped_weaken' : well_scoped.
 
-Lemma fv_context_proper_swap a b x ctx :
-  swap a b x ∈ fv (swap a b ctx) <-> x ∈ fv ctx.
-Proof.
-induction ctx as [|[y] ctx IH] ; cbn.
-- set_solver.
-- set_unfold. rewrite IH. split ; intros [H1 | H2] ; try set_solver.
-  apply (@swap_inj name name_Nominal) in H1. now left.
-Qed.
-
 Lemma well_scoped_proper_swap a b t ctx :
   well_scoped (swap a b ctx) (swap a b t) <-> well_scoped ctx t.
 Proof.
@@ -547,11 +559,11 @@ enough (forall ctx t, well_scoped ctx t -> well_scoped (swap a b ctx) (swap a b 
 { split ; [|apply H]. rewrite <-(swap_inv a b ctx), <-(swap_inv a b t) at 2.
   apply H. }
 clear t ctx ; intros ctx t H. induction H ; cbn.
-- constructor. by rewrite fv_context_proper_swap.
+- constructor. by rewrite swap_fv_iff.
 - constructor ; assumption.
 - constructor. intros x Hx1 Hx2. specialize (H0 (swap a b x)).
-  feed H0 by rewrite <-(swap_inv a b t), fv_term_proper_swap.
-  feed H0 by rewrite <-(swap_inv a b ctx), fv_context_proper_swap.
+  feed H0 by rewrite <-(swap_inv a b t), swap_fv_iff.
+  feed H0 by rewrite <-(swap_inv a b ctx), swap_fv_iff.
   cbn in H0. rewrite open_var_proper_swap, !(@swap_inv name name_Nominal) in H0.
   by apply H0.
 Qed.
