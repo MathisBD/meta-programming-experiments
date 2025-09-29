@@ -27,7 +27,8 @@ Tactic Notation "feed" ident(H) :=
 Inductive term :=
 | var : nat -> term
 | app : term -> term -> term
-| lam : term -> term.
+| lam : term -> term
+| letin : term -> term -> term.
 
 (**************************************************************************)
 (** *** Renamings. *)
@@ -76,90 +77,105 @@ Fixpoint rename (r : ren) (t : term) : term :=
   | var i => var (r i)
   | app t1 t2 => app (rename r t1) (rename r t2)
   | lam t => lam (rename (rup r) t)
-  end.
-
-(**************************************************************************)
-(** *** Substitutions. *)
-(**************************************************************************)
-
-(** A substitution is a map from de Bruijn indices to terms. *)
-Definition subst := nat -> term.
-
-Definition sid : subst :=
-  fun i => var i.
-
-Definition sshift : subst :=
-  fun i => var (S i).
-
-Definition scons (t : term) (s : subst) : subst :=
-  fun i =>
-    match i with
-    | 0 => t
-    | S i => s i
-    end.
-
-Definition srcomp (s : subst) (r : ren) : subst :=
-  fun i => rename r (s i).
-
-Definition rscomp (r : ren) (s : subst) : subst :=
-  fun i => s (r i).
-
-Definition sup (s : subst) : subst :=
-  scons (var 0) (srcomp s rshift).
-
-(** [substitute s t] applies substitution [s] to term [t]. *)
-Fixpoint substitute (s : subst) (t : term) : term :=
-  match t with
-  | var i => s i
-  | app t1 t2 => app (substitute s t1) (substitute s t2)
-  | lam t => lam (substitute (sup s) t)
+  | letin t u => letin (rename r t) (rename (rup r) u)
   end.
 
 (**************************************************************************)
 (** *** Contexts and well-scoped terms. *)
 (**************************************************************************)
 
-(** In this example, local declarations contain no information.
-    In a more realistic setting, a local declaration for a variable
-    would contain the variable's type and body (if present). *)
-Inductive ldecl := LDecl.
+Inductive ldecl :=
+| LAssum : ldecl
+| LDef : term -> ldecl.
 
 Definition context := list ldecl.
 
-Inductive well_scoped : context -> term -> Prop :=
-| well_scoped_var ctx i :
-    i < length ctx -> well_scoped ctx (var i)
-| well_scoped_app ctx t1 t2 :
-    well_scoped ctx t1 ->
-    well_scoped ctx t2 ->
-    well_scoped ctx (app t1 t2)
-| well_scoped_lam ctx t :
-    well_scoped (LDecl :: ctx) t ->
-    well_scoped ctx (lam t).
+(** [scoping n t] states that [t] every de Bruijn index in [t]
+    is smaller than [n]. *)
+Inductive scoping : nat -> term -> Prop :=
+| scoping_var n i :
+    i < n -> scoping n (var i)
+| scoping_app n t1 t2 :
+    scoping n t1 ->
+    scoping n t2 ->
+    scoping n (app t1 t2)
+| scoping_lam n t :
+    scoping (S n) t ->
+    scoping n (lam t)
+| scoping_letin n t u :
+    scoping n t ->
+    scoping (S n) u ->
+    scoping n (letin t u).
 
-#[export] Hint Resolve well_scoped_var well_scoped_app well_scoped_lam : well_scoped.
+#[export] Hint Resolve scoping_var scoping_app scoping_lam scoping_letin : scoping.
+#[export] Hint Extern 10 (_ < _) => lia : scoping.
 
-Lemma well_scoped_weaken ctx ctx' t :
-  length ctx <= length ctx' -> well_scoped ctx t -> well_scoped ctx' t.
+Lemma scoping_var_zero n :
+  scoping (S n) (var 0).
+Proof. constructor. lia. Qed.
+
+Lemma scoping_var_succ n i :
+  scoping n (var i) -> scoping (S n) (var (S i)).
+Proof. constructor. inversion H ; subst. lia. Qed.
+
+#[export] Hint Resolve scoping_var_zero scoping_var_succ : scoping.
+
+Lemma scoping_weaken n n' t :
+  n <= n' -> scoping n t -> scoping n' t.
 Proof.
-intros Hc H. induction H in ctx', Hc |- *.
+intros Hn H. induction H in n', Hn |- *.
 - constructor. lia.
 - constructor ; auto.
-- constructor. apply IHwell_scoped. cbn. lia.
+- constructor. apply IHscoping. lia.
+- constructor.
+  + apply IHscoping1. assumption.
+  + apply IHscoping2. lia.
 Qed.
 
-Lemma well_scoped_weaken' ctx t :
-  well_scoped ctx t -> well_scoped (LDecl :: ctx) t.
-Proof. apply well_scoped_weaken ; cbn ; lia. Qed.
-#[export] Hint Resolve well_scoped_weaken' : well_scoped.
+Lemma scoping_weaken_one n t :
+  scoping n t -> scoping (S n) t.
+Proof. apply scoping_weaken ; lia. Qed.
+#[export] Hint Resolve scoping_weaken_one : scoping.
 
-(** Well-scopedness is preserved by renamings, under certain conditions. *)
-Lemma rename_well_scoped r t c1 c2 :
-  well_scoped c1 t ->
-  (forall i, i < length c1 -> r i < length c2) ->
-  well_scoped c2 (rename r t).
+(** [rscoping n1 n2 r] states that [r] maps a context of size [n1]
+    into a context of size [n2]. *)
+Definition rscoping (n1 n2 : nat) (r : ren) : Prop :=
+  forall i, i < n1 -> r i < n2.
+
+Lemma rscoping_rid n :
+  rscoping n n rid.
+Proof. intros i Hi. unfold rid. lia. Qed.
+
+Lemma rscoping_rshift n :
+  rscoping n (S n) rshift.
+Proof. intros i Hi. unfold rshift. lia. Qed.
+
+Lemma rscoping_rcomp n1 n2 n3 r r' :
+  rscoping n1 n2 r ->
+  rscoping n2 n3 r' ->
+  rscoping n1 n3 (rcomp r r').
+Proof. intros H1 H2 i Hi. unfold rcomp. apply H2, H1. assumption. Qed.
+
+Lemma rscoping_rcons n1 n2 i r :
+  i < n2 ->
+  rscoping n1 n2 r ->
+  rscoping (S n1) n2 (rcons i r).
+Proof. *
+intros H1 H2 [|j] Hj ; cbn.
+- assumption.
+- apply H2. lia.
+Qed.
+
+#[export] Hint Resolve rscoping_rid rscoping_rshift rscoping_rcomp rscoping_rcons : scoping.
+#[export] Hint Unfold rup : scoping.
+
+(** Scoping is preserved by renaming. *)
+Lemma scoping_rename r t n1 n2 :
+  scoping n1 t ->
+  rscoping n1 n2 r ->
+  scoping n2 (rename r t).
 Proof.
-intros Ht Hr. induction Ht in r, Hr, c2 |- * ; cbn.
+intros Ht Hr. induction Ht in r, Hr, n2 |- * ; cbn.
 - constructor. now apply Hr.
 - constructor.
   + now apply IHHt1.
@@ -167,7 +183,14 @@ intros Ht Hr. induction Ht in r, Hr, c2 |- * ; cbn.
 - constructor. apply IHHt. intros i Hi. destruct i as [|i] ; cbn in *.
   + lia.
   + unfold rcomp, rshift. rewrite <-PeanoNat.Nat.succ_lt_mono. apply Hr. lia.
+- constructor.
+  + now apply IHHt1.
+  + apply IHHt2. intros i Hi. destruct i as [|i] ; cbn in *.
+    * lia.
+    * unfold rcomp, rshift. rewrite <-PeanoNat.Nat.succ_lt_mono. apply Hr. lia.
 Qed.
+
+#[export] Hint Resolve scoping_rename : scoping.
 
 (**************************************************************************)
 (** *** Monadic programs. *)
@@ -200,9 +223,18 @@ Definition bind {A B} (mx : M A) (f : A -> M B) : M B :=
     | Error => Error
     end.
 
+Notation "x >>= f" := (bind x f) (at level 50, no associativity).
+Notation "f =<< x" := (bind x f) (at level 50, no associativity).
+
 (** [let*] monadic notation. *)
 Notation "'let*' x ':=' t 'in' u" := (bind t (fun x => u))
   (at level 100, right associativity, t at next level, x pattern).
+
+Definition fmap {A B} (f : A -> B) (mx : M A) : M B :=
+  let* x := mx in
+  ret (f x).
+
+Notation "f <$> x" := (fmap f x) (at level 30, right associativity).
 
 (** Signal fuel is out. *)
 Definition out_of_fuel {A} : M A := fun ctx => OutOfFuel.
@@ -227,11 +259,17 @@ Definition with_decl {A} (d : ldecl) (m : M A) : M A :=
   let* _ := put_ctx ctx in
   ret a.
 
-(** Convenient function to build a lambda abstraction. *)
+(** Convenience function to build a lambda abstraction. *)
 Definition mk_lambda (f : M term) : M term :=
-  with_decl LDecl
+  with_decl LAssum
     (let* body := f in
      ret (lam body)).
+
+(** Convenience function to build a let-expression. *)
+Definition mk_letin (def : term) (f : M term) : M term :=
+  with_decl (LDef def)
+    (let* body := f in
+     ret (letin def body)).
 
 (**************************************************************************)
 (** *** Program logic. *)
@@ -258,6 +296,10 @@ cbv. destruct (m ctx) as [[ctx' a] | |] ; cbn ; intros H ; [| auto..].
 destruct (f a ctx') as [[ctx'' b] | |] ; auto.
 Qed.
 
+Lemma wp_fmap {A B} ctx (f : A -> B) (mx : M A) Φ :
+  wp ctx mx (fun ctx x => Φ ctx (f x)) -> wp ctx (fmap f mx) Φ.
+Proof. intros H. unfold fmap. apply wp_bind. apply H. Qed.
+
 Lemma wp_consequence {A} ctx (m : M A) Q Q' :
   (forall a ctx', Q a ctx' -> Q' a ctx') -> wp ctx m Q -> wp ctx m Q'.
 Proof.
@@ -281,21 +323,30 @@ Lemma wp_with_decl {A} ctx Φ d (m : M A) :
 Proof. cbv. destruct (m (d :: ctx)) as [[a ctx'] | |] ; auto. Qed.
 
 Lemma wp_mk_lambda f ctx Φ :
-  (wp (LDecl :: ctx) f (fun _ body => Φ ctx (lam body))) ->
+  (wp (LAssum :: ctx) f (fun _ body => Φ ctx (lam body))) ->
   wp ctx (mk_lambda f) Φ.
 Proof.
 intros H. unfold mk_lambda. apply wp_with_decl, wp_bind. apply H.
+Qed.
+
+Lemma wp_mk_letin def f ctx Φ :
+  (wp (LDef def :: ctx) f (fun _ body => Φ ctx (letin def body))) ->
+  wp ctx (mk_letin def f) Φ.
+Proof.
+intros H. unfold mk_letin. apply wp_with_decl, wp_bind. apply H.
 Qed.
 
 Ltac wp_step :=
   match goal with
   | [ |- wp _ (ret _) _ ] => apply wp_ret
   | [ |- wp _ (bind _ _) _ ] => apply wp_bind
+  | [ |- wp _ (fmap _ _) _ ] => apply wp_fmap
   | [ |- wp _ out_of_fuel _ ] => apply wp_out_of_fuel
   | [ |- wp _ get_ctx _ ] => apply wp_get
   | [ |- wp _ (put_ctx _) _ ] => apply wp_put
   | [ |- wp _ (with_decl _ _) _ ] => apply wp_with_decl
   | [ |- wp _ (mk_lambda _) _ ] => apply wp_mk_lambda
+  | [ |- wp _ (mk_letin _ _) _ ] => apply wp_mk_letin
   end.
 
 Ltac wp_steps := repeat wp_step.
@@ -313,53 +364,57 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
 
+(** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
+Fixpoint apps (f : term) (xs : list term) : term :=
+  match xs with
+  | [] => f
+  | x :: xs => apps (app f x) xs
+  end.
+
 Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   match n with 0 => out_of_fuel | S n =>
   match t with
   | var i => ret (app k (var i))
   | app t1 t2 =>
-    let* k1 := mk_lambda ( (* x1 *)
-      let* k2 := mk_lambda ( (* x2 *)
-        ret (app (var 1 (* x1 *)) (app (var 0 (* x2 *)) (rename (lift0 2) k))))
-      in cps n (rename (lift0 1) t2) k2)
-    in
-    cps n t1 k1
+    cps n t1 =<< mk_lambda ( (* x1 *)
+    cps n (rename (lift0 1) t2) =<< mk_lambda ( (* x2 *)
+    ret (apps (var 1 (* x1 *)) [ var 0 (* x2 *) ; rename (lift0 2) k ])))
   | lam t' =>
-    let* rhs :=
+    app k <$>
       mk_lambda ( (* x *)
       mk_lambda ( (* k' *)
-        cps n (rename (lift0 1) t') (var 0 (* k' *))
-      ))
-    in
-    ret (app k rhs)
+      cps n (rename (lift0 1) t') (var 0 (* k' *))))
+  | letin t u =>
+    cps n t =<< mk_lambda ( (* v *)
+    mk_letin (var 0 (* v *)) ( (* x *)
+    cps n (rename (lift 1 1) u) (rename (lift0 2) k)))
   end
   end.
 
+(** Prove a goal of the form [scoping _ _].
+    Succeeds or does nothing. *)
+Ltac prove_scoping :=
+  match goal with
+  | [ |- scoping _ _ ] =>
+    solve [ cbn in * ; autounfold with scoping ; eauto 10 with scoping ]
+  end.
+
 Lemma cps_safe n t k :
-  {{ ctx. well_scoped ctx t /\ well_scoped ctx k }}
+  {{ ctx. scoping (length ctx) t /\ scoping (length ctx) k }}
     cps n t k
-  {{ ctx t'. well_scoped ctx t' }}.
+  {{ ctx t'. scoping (length ctx) t' }}.
 Proof.
 induction n in k, t |- * ; intros ctx Φ [Ht Hk] HΦ ; cbn ; [constructor|].
 destruct t ; cbn.
-- apply HΦ. auto with well_scoped.
+- apply HΦ. prove_scoping.
 - inversion Ht ; subst. wp_steps.
-  apply IHn.
-  { split.
-    - eapply rename_well_scoped ; [exact H3|]. intros i Hi.
-      unfold rcomp, rshift, rid. cbn. lia.
-    - constructor. constructor.
-      + constructor. cbn. lia.
-      + constructor.
-        * constructor. cbn. lia.
-        * eapply rename_well_scoped ; [exact Hk|]. intros i Hi.
-          unfold rcomp, rshift, rid. cbn. lia. }
-  intros t' Ht'. apply IHn. { auto with well_scoped. }
+  apply IHn. { split ; prove_scoping. }
+  intros t' Ht'. apply IHn. { split ; prove_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
-- wp_steps. apply IHn.
-  { split.
-    - inversion Ht ; subst. eapply rename_well_scoped ; [eassumption|].
-      intros i Hi. unfold rcomp, rshift, rid. cbn in *. lia.
-    - constructor. cbn. lia. }
-  intros t' Ht'. wp_steps. apply HΦ. auto with well_scoped.
+- wp_steps. apply IHn. { inversion Ht ; subst. split ; prove_scoping. }
+  intros t' Ht'. wp_steps. apply HΦ. prove_scoping.
+- inversion Ht ; subst. wp_steps.
+  apply IHn. { split ; prove_scoping. }
+  intros t' Ht'. apply IHn. { split ; prove_scoping. }
+  intros t'' Ht''. apply HΦ. assumption.
 Qed.
