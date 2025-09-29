@@ -777,7 +777,7 @@ destruct t ; cbn.
 - apply HΦ. auto with well_scoped.
 - inversion Ht.
 - inversion Ht ; subst. wp_steps. intros x Hx. wp_steps. intros y Hy. wp_steps.
-  apply IHn. { inversion Ht ; subst. split ; auto 6 with well_scoped. }
+  apply IHn. { split ; auto 6 with well_scoped. }
   intros t' Ht'. apply IHn. { auto with well_scoped. }
   intros t'' Ht''. apply HΦ. assumption.
 - wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
