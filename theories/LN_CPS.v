@@ -833,6 +833,10 @@ Definition with_decl {A} (d : ldecl) (m : M A) : M A :=
 (** [fresh_name] returns a name which is not in the current context. *)
 Definition fresh_name : M name. Admitted.
 
+Definition with_fresh_var {A} (f : name -> M A) : M A :=
+  let* x := fresh_name in
+  with_decl (LAssum x) (f x).
+
 (** Convenience function to build a lambda abstraction. *)
 Definition mk_lambda (f : name -> M term) : M term :=
   let* x := fresh_name in
@@ -897,11 +901,20 @@ Lemma wp_with_decl {A} ctx Φ d (m : M A) :
 Proof. cbv. destruct (m (d :: ctx)) as [[a ctx'] | |] ; auto. Qed.
 
 Lemma wp_fresh_name ctx Φ :
-  (forall x, x ∉ fv ctx -> Φ ctx x) -> wp ctx fresh_name Φ.
+  (forall x, x ∉ domain ctx -> Φ ctx x) -> wp ctx fresh_name Φ.
 Proof. Admitted.
 
+Lemma wp_with_fresh_var {A} (f : name -> M A) ctx Φ :
+  (forall x, x ∉ domain ctx ->
+    wp (LAssum x :: ctx) (f x) (fun _ a => Φ ctx a)) ->
+  wp ctx (with_fresh_var f) Φ.
+Proof.
+intros H. unfold with_fresh_var. apply wp_bind, wp_fresh_name. intros x Hx.
+apply wp_with_decl. by apply H.
+Qed.
+
 Lemma wp_mk_lambda f ctx Φ :
-  (forall x, x ∉ fv ctx ->
+  (forall x, x ∉ domain ctx ->
     wp (LAssum x :: ctx) (f x) (fun _ body => Φ ctx (named_lam x body))) ->
   wp ctx (mk_lambda f) Φ.
 Proof.
@@ -910,7 +923,7 @@ specialize (H x Hx). apply wp_with_decl, wp_bind. cbn. apply H.
 Qed.
 
 Lemma wp_mk_letin def f ctx Φ :
-  (forall x, x ∉ fv ctx ->
+  (forall x, x ∉ domain ctx ->
     wp (LDef x def :: ctx) (f x) (fun _ body => Φ ctx (named_letin x def body))) ->
   wp ctx (mk_letin def f) Φ.
 Proof.
@@ -928,6 +941,7 @@ Ltac wp_step :=
   | [ |- wp _ (put_ctx _) _ ] => apply wp_put
   | [ |- wp _ (with_decl _ _) _ ] => apply wp_with_decl
   | [ |- wp _ fresh_name _ ] => apply wp_fresh_name
+  | [ |- wp _ (with_fresh_var _) _ ] => apply wp_with_fresh_var
   | [ |- wp _ (mk_lambda _) _ ] => apply wp_mk_lambda
   | [ |- wp _ (mk_letin _ _) _ ] => apply wp_mk_letin
   end.
@@ -944,36 +958,8 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
   (at level 100, c1 binder, v binder, c2 binder).
 
 (**************************************************************************)
-(** *** CPS transformation meta-program. *)
+(** *** Tactic to solve scoping goals. *)
 (**************************************************************************)
-
-Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
-  match n with 0 => out_of_fuel | S n =>
-  match t with
-  | bvar i => error
-  | fvar x => ret (app k (fvar x))
-  | app t1 t2 =>
-    cps n t1 =<< mk_lambda (fun x1 =>
-    cps n t2 =<< mk_lambda (fun x2 =>
-    ret (apps (fvar x1) [ fvar x2 ; k ])))
-  | lam t' =>
-    app k <$>
-      mk_lambda (fun x =>
-      mk_lambda (fun k' =>
-      cps n (t' ^ x) (fvar k')))
-  | letin t u =>
-    cps n t =<< mk_lambda (fun v =>
-    mk_letin (fvar v) (fun x =>
-    cps n (u ^ x) k))
-  end
-  end.
-
-(*Inductive term_view :=
-| LamV : name -> term -> term_view.*)
-
-Lemma not_elem_domain_fv x ctx :
-  x ∉ fv ctx -> x ∉ domain ctx.
-Proof. intros H H'. apply H. by apply domain_fv. Qed.
 
 (** [set_solver] without any hypotheses. *)
 Ltac set_solver_nohyps := set_solver +.
@@ -1002,45 +988,76 @@ Ltac simpl_scoping :=
   (* Try to solve the remaining side conditions using fast, low-effort tactics. *)
   first [ set_solver_nohyps | eauto 4 | idtac ].
 
+(**************************************************************************)
+(** *** CPS transformation meta-program. *)
+(**************************************************************************)
+
+Inductive term_view :=
+| fvarV : name -> term_view
+| bvarV : nat -> term_view
+| appV : term -> term -> term_view
+| lamV : (name -> term) -> term_view
+| letinV : term -> (name -> term) -> term_view.
+
+Definition view (t : term) : term_view :=
+  match t with
+  | fvar x => fvarV x
+  | bvar i => bvarV i
+  | app t1 t2 => appV t1 t2
+  | lam body => lamV (fun x => body ^ x)
+  | letin def body => letinV def (fun x => body ^ x)
+  end.
+
+Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
+  match n with 0 => out_of_fuel | S n =>
+  match t with
+  | bvar i => error
+  | fvar x => ret $ app k (fvar x)
+  | app t1 t2 =>
+    cps n t1 =<< mk_lambda (fun x1 =>
+    cps n t2 =<< mk_lambda (fun x2 =>
+    ret $ apps (fvar x1) [ fvar x2 ; k ]))
+  | lam t' =>
+    app k <$>
+      mk_lambda (fun x =>
+      mk_lambda (fun k' =>
+      cps n (t' ^ x) (fvar k')))
+  | letin t u =>
+    cps n t =<< mk_lambda (fun v =>
+    mk_letin (fvar v) (fun x =>
+    cps n (u ^ x) k))
+  end
+  end.
+
 Lemma cps_safe n t k :
   {{ ctx. scoping (domain ctx) t /\ scoping (domain ctx) k }}
     cps n t k
   {{ ctx t'. scoping (domain ctx) t' }}.
 Proof.
 induction n in k, t |- * ; intros ctx Φ [Ht Hk] HΦ ; cbn [cps] ; [constructor|].
-destruct t.
+destruct t ; cbn [view].
 - wp_steps. apply HΦ. simpl_scoping.
 - inversion Ht.
 - inversion Ht ; subst. wp_steps. intros x Hx. wp_steps. intros y Hy. wp_steps.
-  apply IHn.
-  { split ; simpl_scoping. by apply not_elem_domain_fv. }
-  intros t' Ht'. apply IHn.
-  { split ; simpl_scoping. by apply not_elem_domain_fv. }
+  apply IHn. { split ; simpl_scoping. }
+  intros t' Ht'. apply IHn. { split ; simpl_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
 - wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
   {
     split ; simpl_scoping.
     inversion Ht ; subst. eapply scoping_weaken ; [|apply H1].
     + set_solver.
-    + apply scoping_vars in Ht. rewrite domain_fv in Ht. set_solver.
-    + by apply not_elem_domain_fv.
+    + apply scoping_vars in Ht. set_solver.
+    + assumption.
   }
   intros t' Ht'. apply HΦ. simpl_scoping.
-  + by apply not_elem_domain_fv.
-  + pose proof (not_elem_domain_fv y ctx). set_solver.
-- wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
+- inversion Ht ; subst. wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
   {
-    split ; simpl_scoping.
-    inversion Ht ; subst. eapply scoping_weaken ; [|apply H3].
+    split ; simpl_scoping. eapply scoping_weaken ; [|apply H3].
     - set_solver.
-    - apply scoping_vars in Ht. rewrite domain_fv in Ht. set_solver.
-    - apply not_elem_domain_fv ; set_solver.
+    - apply scoping_vars in Ht. set_solver.
+    - set_solver.
   }
-  intros t' Ht'. apply IHn.
-  {
-    inversion Ht ; subst. split ; simpl_scoping.
-    - by apply not_elem_domain_fv.
-    - pose proof (not_elem_domain_fv y ctx). set_solver.
-  }
+  intros t' Ht'. apply IHn. { split ; simpl_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
 Qed.
