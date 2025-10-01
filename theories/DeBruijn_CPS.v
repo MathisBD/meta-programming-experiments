@@ -30,6 +30,13 @@ Inductive term :=
 | lam : term -> term
 | letin : term -> term -> term.
 
+(** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
+Fixpoint apps (f : term) (xs : list term) : term :=
+  match xs with
+  | [] => f
+  | x :: xs => apps (app f x) xs
+  end.
+
 (**************************************************************************)
 (** *** Renamings. *)
 (**************************************************************************)
@@ -363,13 +370,6 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
 (**************************************************************************)
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
-
-(** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
-Fixpoint apps (f : term) (xs : list term) : term :=
-  match xs with
-  | [] => f
-  | x :: xs => apps (app f x) xs
-  end.
 
 Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   match n with 0 => out_of_fuel | S n =>

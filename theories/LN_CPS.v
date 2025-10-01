@@ -132,6 +132,42 @@ Proof. set_unfold. by intros ->. Qed.
   mkNominal name swap_name fv_name swap_name_inv swap_name_fv swap_name_free.
 
 (**************************************************************************)
+(** *** Finite sets of names are nominal. *)
+(**************************************************************************)
+
+Definition fv_gset_name (E : gset name) : gset name := E.
+
+Definition swap_gset_name (a b : name) (E : gset name) : gset name :=
+  set_map (swap a b) E.
+
+Lemma swap_gset_name_inv a b E :
+  swap_gset_name a b (swap_gset_name a b E) = E.
+Proof.
+unfold swap_gset_name. rewrite set_eq. intros x ; split.
+- set_unfold. intros (? & -> & ? & -> & H). by rewrite (@swap_inv name name_Nominal).
+- set_unfold. intros H. exists (swap_name a b x).
+  rewrite (@swap_inv name name_Nominal). split ; [reflexivity|].
+  exists x ; auto.
+Qed.
+
+Lemma swap_gset_name_fv a b x E :
+  x ∈ fv_gset_name E -> swap_name a b x ∈ fv_gset_name (swap_gset_name a b E).
+Proof. intros H. set_solver. Qed.
+
+Lemma swap_gset_name_free a b E :
+  a ∉ fv_gset_name E -> b ∉ fv_gset_name E -> swap_gset_name a b E = E.
+Proof.
+intros Ha Hb. unfold swap_gset_name. unfold fv_gset_name in Ha, Hb.
+rewrite set_eq. intros x ; split ; intros Hx.
+- set_unfold. admit.
+- set_unfold. exists (swap_name a b x).
+Admitted.
+
+#[export] Instance gset_name_Nominal : Nominal (gset name) :=
+  mkNominal (gset name) swap_gset_name fv_gset_name swap_gset_name_inv
+    swap_gset_name_fv swap_gset_name_free.
+
+(**************************************************************************)
 (** *** Lambda terms, as a nominal type. *)
 (**************************************************************************)
 
@@ -142,6 +178,13 @@ Inductive term :=
 | app (t1 : term) (t2 : term) : term
 | lam (t : term) : term
 | letin (t u : term) : term.
+
+(** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
+Fixpoint apps (f : term) (xs : list term) : term :=
+  match xs with
+  | [] => f
+  | x :: xs => apps (app f x) xs
+  end.
 
 Fixpoint swap_term (a b : name) (t : term) : term :=
   match t with
@@ -215,6 +258,14 @@ Fixpoint close (n : nat) (x : name) (t : term) : term :=
 
 (** [t \^ x] replaces variable [x] with de Bruijn index [0] in [t]. *)
 Notation "t '\^' x" := (close 0 x t) (at level 30, no associativity).
+
+(** Named version of [lam]. *)
+Definition named_lam (x : name) (body : term) : term :=
+  lam (body \^ x).
+
+(** Named version of [letin]. *)
+Definition named_letin (x : name) (xdef : term) (body : term) : term :=
+  letin xdef (body \^ x).
 
 (*(** [subst x u t] substitutes [x] with [u] in [t].
     It assumes [u] and [t] are locally closed, so there is no need for lifting. *)
@@ -568,76 +619,65 @@ Proof. intros H. constructor. rewrite domain_app. set_solver. Qed.
 
 (** A term is well-scoped iff all of its free variables appear in the context.
     In particular [bvar i] is never well-scoped. *)
-Inductive well_scoped : context -> term -> Prop :=
-| well_scoped_fvar ctx x :
-    x ∈ domain ctx -> well_scoped ctx (fvar x)
-| well_scoped_app ctx t1 t2 :
-    well_scoped ctx t1 ->
-    well_scoped ctx t2 ->
-    well_scoped ctx (app t1 t2)
-| well_scoped_lam ctx t :
-    (forall x, x ∉ fv t -> x ∉ fv ctx -> well_scoped (LAssum x :: ctx) (t ^ x)) ->
-    well_scoped ctx (lam t)
-| well_scoped_letin ctx t u :
-    well_scoped ctx t ->
-    (forall x, x ∉ fv u -> x ∉ fv ctx -> well_scoped (LDef x t :: ctx) (u ^ x)) ->
-    well_scoped ctx (letin t u).
+Inductive scoping : gset name -> term -> Prop :=
+| scoping_fvar Γ x :
+    x ∈ Γ -> scoping Γ (fvar x)
+| scoping_app Γ t1 t2 :
+    scoping Γ t1 ->
+    scoping Γ t2 ->
+    scoping Γ (app t1 t2)
+| scoping_lam Γ t :
+    (forall x, x ∉ fv t -> x ∉ Γ -> scoping ({[ x ]} ∪ Γ) (t ^ x)) ->
+    scoping Γ (lam t)
+| scoping_letin Γ t u :
+    scoping Γ t ->
+    (forall x, x ∉ fv u -> x ∉ Γ -> scoping ({[ x ]} ∪ Γ) (u ^ x)) ->
+    scoping Γ (letin t u).
 
-#[export] Hint Resolve well_scoped_fvar well_scoped_app : well_scoped.
+#[export] Hint Extern 10 (_ ∈ _) => (pose proof domain_fv ; set_solver) : scoping.
+#[export] Hint Resolve scoping_fvar scoping_app : scoping.
 
-Lemma well_scoped_fvar_head_assum ctx x :
-  well_scoped (LAssum x :: ctx) (fvar x).
-Proof. constructor. set_solver. Qed.
-
-Lemma well_scoped_fvar_head_def ctx x t :
-  well_scoped (LDef x t :: ctx) (fvar x).
-Proof. constructor. set_solver. Qed.
-
-#[export] Hint Resolve well_scoped_fvar_head_assum well_scoped_fvar_head_def : well_scoped.
-
-Lemma well_scoped_wf ctx t : well_scoped ctx t -> wf t.
+Lemma scoping_wf Γ t : scoping Γ t -> wf t.
 Proof.
 intros H. induction H.
 - constructor.
 - by constructor.
-- destruct (exist_fresh (fv t ∪ fv ctx)) as [x Hx].
+- destruct (exist_fresh (fv t ∪ Γ)) as [x Hx].
   apply wf_lam_intro with x ; set_solver.
-- destruct (exist_fresh (fv u ∪ fv ctx)) as [x Hx].
+- destruct (exist_fresh (fv u ∪ Γ)) as [x Hx].
   apply wf_letin_intro with x ; set_solver.
 Qed.
-#[export] Hint Resolve well_scoped_wf : wf.
+#[export] Hint Resolve scoping_wf : wf.
 
-Lemma well_scoped_vars ctx t :
-  well_scoped ctx t -> fv t ⊆ domain ctx.
+Lemma scoping_vars Γ t :
+  scoping Γ t -> fv t ⊆ Γ.
 Proof.
 intros H. induction H ; cbn.
 - set_solver.
 - set_solver.
-- destruct (exist_fresh (fv t ∪ fv ctx)) as [x Hx].
+- destruct (exist_fresh (fv t ∪ Γ)) as [x Hx].
   specialize (H0 x). feed H0 by set_solver. feed H0 by set_solver.
-  cbn in H0. intros y Hy.
-  assert (y ∈ fv (t ^ x)) as Hy'. { by apply fv_open_1. }
+  intros y Hy. assert (y ∈ fv (t ^ x)) as Hy'. { by apply fv_open_1. }
   specialize (H0 y Hy'). set_solver.
-- enough (fv_term u ⊆ domain ctx) by set_solver.
-  destruct (exist_fresh (fv u ∪ fv ctx)) as [x Hx].
+- enough (fv_term u ⊆ Γ) by set_solver.
+  destruct (exist_fresh (fv u ∪ Γ)) as [x Hx].
   specialize (H1 x). feed H1 by set_solver. feed H1 by set_solver.
-  cbn in H1. intros y Hy.
-  assert (y ∈ fv (u ^ x)) as Hy'. { by apply fv_open_1. }
+  intros y Hy. assert (y ∈ fv (u ^ x)) as Hy'. { by apply fv_open_1. }
   specialize (H1 y Hy'). set_solver.
 Qed.
 
-Lemma well_scoped_equivariant a b ctx t :
-  well_scoped (swap a b ctx) (swap a b t) <-> well_scoped ctx t.
-Proof.
-enough (forall ctx t, well_scoped ctx t -> well_scoped (swap a b ctx) (swap a b t)).
-{ split ; [|apply H]. rewrite <-(swap_inv a b ctx), <-(swap_inv a b t) at 2.
+Lemma scoping_equivariant a b Γ t :
+  scoping (swap a b Γ) (swap a b t) <-> scoping Γ t.
+Proof. Admitted.
+(*enough (forall ctx t, scoping ctx t -> scoping (swap a b ctx) (swap a b t)).
+{ split ; [|apply H]. rewrite <-(swap_inv a b Γ), <-(swap_inv a b t) at 2.
   apply H. }
-clear t ctx ; intros ctx t H. induction H ; cbn.
-- constructor. by rewrite domain_equivariant.
+clear t Γ ; intros Γ t H. induction H ; cbn.
+- constructor. setoid_rewrite (@swap_fv_iff _ gset_name_Nominal). assumption.
 - constructor ; assumption.
 - constructor. intros x Hx1 Hx2. specialize (H0 (swap a b x)).
   feed H0 by rewrite <-(swap_inv a b t), swap_fv_iff.
-  feed H0 by rewrite <-(swap_inv a b ctx), swap_fv_iff.
+  feed H0. { setoid_rewrite <-(swap_inv a b Γ). setoid_rewrite swap_fv_iff.
   cbn in H0. rewrite open_var_equivariant, !(@swap_inv name name_Nominal) in H0.
   by apply H0.
 - constructor ; [by assumption|]. intros x Hx1 Hx2.
@@ -646,99 +686,82 @@ clear t ctx ; intros ctx t H. induction H ; cbn.
   feed H1 by rewrite <-(swap_inv a b ctx), swap_fv_iff.
   cbn in H1. rewrite open_var_equivariant, !(@swap_inv name name_Nominal) in H1.
   by apply H1.
-Qed.
+Qed.*)
 
-Lemma well_scoped_lam_intro x t ctx :
-  x ∉ fv t -> x ∉ fv ctx -> well_scoped (LAssum x :: ctx) (t ^ x) ->
-  well_scoped ctx (lam t).
+Lemma scoping_lam_intro x t Γ :
+  x ∉ fv t -> x ∉ Γ -> scoping ({[ x ]} ∪ Γ) (t ^ x) ->
+  scoping Γ (lam t).
 Proof.
-intros Hx1 Hx2 H. constructor. intros y Hy1 Hy2.
-rewrite <-(well_scoped_equivariant x y). cbn. rewrite swap_name_right.
+(*intros Hx1 Hx2 H. constructor. intros y Hy1 Hy2.
+rewrite <-(scoping_equivariant x y). cbn. rewrite swap_name_right.
 rewrite open_var_equivariant, swap_name_right.
 rewrite (@swap_free context context_Nominal), (@swap_free term term_Nominal) by assumption.
 exact H.
-Qed.
+Qed.*)
+Admitted.
 
-Lemma well_scoped_letin_intro x t u ctx :
-  well_scoped ctx t ->
-  x ∉ fv u -> x ∉ fv ctx -> well_scoped (LDef x t :: ctx) (u ^ x) ->
-  well_scoped ctx (letin t u).
+Lemma scoping_letin_intro x t u Γ :
+  scoping Γ t ->
+  x ∉ fv u -> x ∉ Γ -> scoping ({[ x ]} ∪ Γ) (u ^ x) ->
+  scoping Γ (letin t u).
 Proof.
-intros Ht Hx1 Hx2 Hu. constructor ; [assumption|]. intros y Hy1 Hy2.
-rewrite <-(well_scoped_equivariant x y). cbn. rewrite swap_name_right.
+(*intros Ht Hx1 Hx2 Hu. constructor ; [assumption|]. intros y Hy1 Hy2.
+rewrite <-(scoping_equivariant x y). cbn. rewrite swap_name_right.
 rewrite open_var_equivariant, swap_name_right.
 rewrite (@swap_free context context_Nominal), (@swap_free term term_Nominal _ _ u) by assumption.
-apply well_scoped_vars in Ht. rewrite domain_fv in Ht.
+apply scoping_vars in Ht. rewrite domain_fv in Ht.
 rewrite (@swap_free term term_Nominal) by set_solver.
 exact Hu.
-Qed.
+Qed.*)
+Admitted.
 
-Lemma well_scoped_weaken_1 d c1 c2 t :
-  well_scoped (c1 ++ c2) t -> well_scoped (c1 ++ d :: c2) t.
+Lemma scoping_weaken Γ Γ' t :
+  Γ ⊆ Γ' -> scoping Γ t -> scoping Γ' t.
 Proof.
-intros H. remember (c1 ++ c2) as c eqn:Hc.
-induction H in d, c1, c2, Hc |- * ; subst.
-- constructor. destruct d ; set_solver.
-- constructor ; auto.
-- constructor. intros y Hy Hy'. specialize (H0 y Hy). feed H0 by set_solver.
-  specialize (H0 d (LAssum y :: c1) c2). feed H0 by cbn. by apply H0.
-- constructor ; [by apply IHwell_scoped|]. intros y Hy Hy'.
-  specialize (H1 y Hy). feed H1 by set_solver.
-  specialize (H1 d (LDef y t :: c1) c2). feed H1 by cbn. by apply H1.
-Qed.
-
-Lemma well_scoped_irrel x xdef c1 c2 t :
-  well_scoped (c1 ++ LDef x xdef :: c2) t -> well_scoped (c1 ++ LAssum x :: c2) t.
-Proof.
-intros H. remember (c1 ++ LDef x xdef :: c2) as c eqn:Hc.
-induction H in x, xdef, c1, c2, Hc |- * ; subst.
+intros H1 H2. induction H2 in Γ', H1 |- *.
 - constructor. set_solver.
-- constructor ; eauto.
-- destruct (exist_fresh (fv t ∪ fv (c1 ++ LDef x xdef :: c2))) as [y Hy].
-  apply well_scoped_lam_intro with y ; [set_solver | set_solver |].
-  specialize (H0 y). feed H0 by set_solver. feed H0 by set_solver.
-  specialize (H0 x xdef (LAssum y :: c1) c2). feed H0 by cbn.
-  by apply H0.
-- destruct (exist_fresh (fv u ∪ fv (c1 ++ LDef x xdef :: c2))) as [y Hy].
-  apply well_scoped_letin_intro with y ; [eauto | set_solver | set_solver |].
-  specialize (H1 y). feed H1 by set_solver. feed H1 by set_solver.
-  specialize (H1 x xdef (LDef y t :: c1) c2). feed H1 by cbn.
-  by apply H1.
+- constructor ; auto.
+- constructor. intros y Hy Hy'. apply H0 ; set_solver.
+- constructor ; [auto|]. intros y Hy Hy'. apply H0 ; set_solver.
 Qed.
 
-Lemma well_scoped_weaken_1' d c t :
-  well_scoped c t -> well_scoped (d :: c) t.
-Proof. apply (well_scoped_weaken_1 d [] c t). Qed.
+(* #[export] Hint Resolve scoping_weaken_1' scoping_weaken_2' : scoping.*)
 
-Lemma well_scoped_weaken_2' x xdef c t :
-  well_scoped (LDef x xdef :: c) t -> well_scoped (LAssum x :: c) t.
-Proof. apply (well_scoped_weaken_2 x xdef [] c t). Qed.
-
-#[export] Hint Resolve well_scoped_weaken_1' well_scoped_weaken_2' : well_scoped.
-
-Lemma well_scoped_lam_close ctx t x :
-  x ∉ fv ctx -> well_scoped (LAssum x :: ctx) t -> well_scoped ctx (lam (t \^ x)).
+Lemma scoping_named_lam Γ t x :
+  x ∉ Γ -> scoping ({[ x ]} ∪ Γ) t -> scoping Γ (named_lam x t).
 Proof.
-intros H1 H2. apply well_scoped_lam_intro with x.
+intros H1 H2. apply scoping_lam_intro with x.
 - apply not_elem_of_fv_close.
 - assumption.
 - rewrite open_close_same ; eauto with wf.
 Qed.
-#[export] Hint Resolve well_scoped_lam_close : well_scoped.
 
-Lemma well_scoped_letin_close ctx t x xdef :
-  well_scoped ctx xdef ->
+(*Lemma scoping_lam_close' ctx t x :
+  x ∉ fv ctx -> scoping ({[ x ]} ∪ domain ctx) t -> scoping (domain ctx) (lam (t \^ x)).
+Proof. Admitted.*)
+
+
+Lemma scoping_named_letin Γ body x xdef :
+  scoping Γ xdef ->
+  x ∉ Γ ->
+  scoping ({[ x ]} ∪ Γ) body ->
+  scoping Γ (named_letin x xdef body).
+Proof.
+intros H1 H2 H3. apply scoping_letin_intro with x.
+- assumption.
+- apply not_elem_of_fv_close.
+- assumption.
+- rewrite open_close_same ; eauto with wf.
+Qed.
+(* #[export] Hint Resolve scoping_letin_close : scoping.*)
+
+
+(*Lemma scoping_letin_close' ctx t x xdef :
+  scoping (domain ctx) xdef ->
   x ∉ fv ctx ->
-  well_scoped (LDef x xdef :: ctx) t ->
-  well_scoped ctx (letin xdef (t \^ x)).
-Proof.
-intros H1 H2 H3. apply well_scoped_letin_intro with x.
-- assumption.
-- apply not_elem_of_fv_close.
-- assumption.
-- rewrite open_close_same ; eauto with wf.
-Qed.
-#[export] Hint Resolve well_scoped_letin_close : well_scoped.
+  scoping ({[ x ]} ∪ domain ctx) t ->
+  scoping (domain ctx) (letin xdef (t \^ x)).
+Proof. Admitted.*)
 
 (**************************************************************************)
 (** *** Monadic programs. *)
@@ -814,15 +837,13 @@ Definition fresh_name : M name. Admitted.
 Definition mk_lambda (f : name -> M term) : M term :=
   let* x := fresh_name in
   with_decl (LAssum x)
-    (let* body := f x in
-     ret (lam (body \^ x))).
+    (named_lam x <$> f x).
 
 (** Convenience function to build a let-expression. *)
 Definition mk_letin (def : term) (f : name -> M term) : M term :=
   let* x := fresh_name in
   with_decl (LDef x def)
-    (let* body := f x in
-     ret (letin def (body \^ x))).
+    (named_letin x def <$> f x).
 
 (**************************************************************************)
 (** *** Program logic. *)
@@ -881,7 +902,7 @@ Proof. Admitted.
 
 Lemma wp_mk_lambda f ctx Φ :
   (forall x, x ∉ fv ctx ->
-    wp (LAssum x :: ctx) (f x) (fun _ body => Φ ctx (lam (body \^ x)))) ->
+    wp (LAssum x :: ctx) (f x) (fun _ body => Φ ctx (named_lam x body))) ->
   wp ctx (mk_lambda f) Φ.
 Proof.
 intros H. unfold mk_lambda. apply wp_bind, wp_fresh_name. intros x Hx.
@@ -890,7 +911,7 @@ Qed.
 
 Lemma wp_mk_letin def f ctx Φ :
   (forall x, x ∉ fv ctx ->
-    wp (LDef x def :: ctx) (f x) (fun _ body => Φ ctx (letin def (body \^ x)))) ->
+    wp (LDef x def :: ctx) (f x) (fun _ body => Φ ctx (named_letin x def body))) ->
   wp ctx (mk_letin def f) Φ.
 Proof.
 intros H. unfold mk_letin. apply wp_bind, wp_fresh_name. intros x Hx.
@@ -926,13 +947,6 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
 
-(** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
-Fixpoint apps (f : term) (xs : list term) : term :=
-  match xs with
-  | [] => f
-  | x :: xs => apps (app f x) xs
-  end.
-
 Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   match n with 0 => out_of_fuel | S n =>
   match t with
@@ -954,29 +968,79 @@ Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   end
   end.
 
+(*Inductive term_view :=
+| LamV : name -> term -> term_view.*)
+
+Lemma not_elem_domain_fv x ctx :
+  x ∉ fv ctx -> x ∉ domain ctx.
+Proof. intros H H'. apply H. by apply domain_fv. Qed.
+
+(** [set_solver] without any hypotheses. *)
+Ltac set_solver_nohyps := set_solver +.
+
+(** Solve a goal [scoping _ _] by applying weakening + assumption. *)
+Ltac simpl_scoping_base :=
+  match goal with
+  | [ H : scoping ?Γ ?t |- scoping ?Γ' ?t ] =>
+      by apply scoping_weaken with Γ ; [set_solver_nohyps | assumption]
+  end.
+
+(** Apply a single step of [simpl_scoping]. *)
+Ltac simpl_scoping_step k :=
+  lazymatch goal with
+  | [ |- scoping _ (fvar _) ] => apply scoping_fvar
+  | [ |- scoping _ (app _ _) ] => apply scoping_app ; k
+  | [ |- scoping _ (apps _ (_ :: _)) ] => (progress cbn [apps]) ; k
+  | [ |- scoping _ (named_lam _ _) ] => apply scoping_named_lam ; [| k]
+  | [ |- scoping _ (named_letin _ _ _) ] => apply scoping_named_letin ; [k | | k]
+  end.
+
+(** Simplify a goal of the form [scoping Γ t]. *)
+Ltac simpl_scoping :=
+  (* Simplify using the rules for [scoping]. *)
+  first [ simpl_scoping_base | simpl_scoping_step simpl_scoping | idtac ] ;
+  (* Try to solve the remaining side conditions using fast, low-effort tactics. *)
+  first [ set_solver_nohyps | eauto 4 | idtac ].
+
 Lemma cps_safe n t k :
-  {{ ctx. well_scoped ctx t /\ well_scoped ctx k }}
+  {{ ctx. scoping (domain ctx) t /\ scoping (domain ctx) k }}
     cps n t k
-  {{ ctx t'. well_scoped ctx t' }}.
+  {{ ctx t'. scoping (domain ctx) t' }}.
 Proof.
-induction n in k, t |- * ; intros ctx Φ [Ht Hk] HΦ ; cbn ; [constructor|].
-destruct t ; cbn.
-- apply HΦ. auto with well_scoped.
+induction n in k, t |- * ; intros ctx Φ [Ht Hk] HΦ ; cbn [cps] ; [constructor|].
+destruct t.
+- wp_steps. apply HΦ. simpl_scoping.
 - inversion Ht.
 - inversion Ht ; subst. wp_steps. intros x Hx. wp_steps. intros y Hy. wp_steps.
-  apply IHn. { split ; auto 6 with well_scoped. }
-  intros t' Ht'. apply IHn. { auto with well_scoped. }
+  apply IHn.
+  { split ; simpl_scoping. by apply not_elem_domain_fv. }
+  intros t' Ht'. apply IHn.
+  { split ; simpl_scoping. by apply not_elem_domain_fv. }
   intros t'' Ht''. apply HΦ. assumption.
 - wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
-  { split ; auto with well_scoped.
-    inversion Ht ; subst. apply well_scoped_weaken_1'. apply H1 ; [|assumption].
-    apply well_scoped_vars in Ht. rewrite domain_fv in Ht. set_solver. }
-  intros t' Ht'. wp_steps. apply HΦ. auto with well_scoped.
+  {
+    split ; simpl_scoping.
+    inversion Ht ; subst. eapply scoping_weaken ; [|apply H1].
+    + set_solver.
+    + apply scoping_vars in Ht. rewrite domain_fv in Ht. set_solver.
+    + by apply not_elem_domain_fv.
+  }
+  intros t' Ht'. apply HΦ. simpl_scoping.
+  + by apply not_elem_domain_fv.
+  + pose proof (not_elem_domain_fv y ctx). set_solver.
 - wp_steps. intros x Hx. wp_steps. intros y Hy. apply IHn.
-  { split ; auto with well_scoped. inversion Ht ; subst.
-    specialize (H3 y). feed H3 by admit. feed H3 by set_solver.
-    admit. }
+  {
+    split ; simpl_scoping.
+    inversion Ht ; subst. eapply scoping_weaken ; [|apply H3].
+    - set_solver.
+    - apply scoping_vars in Ht. rewrite domain_fv in Ht. set_solver.
+    - apply not_elem_domain_fv ; set_solver.
+  }
   intros t' Ht'. apply IHn.
-  { inversion Ht ; subst. split ; auto with well_scoped. }
+  {
+    inversion Ht ; subst. split ; simpl_scoping.
+    - by apply not_elem_domain_fv.
+    - pose proof (not_elem_domain_fv y ctx). set_solver.
+  }
   intros t'' Ht''. apply HΦ. assumption.
 Qed.
