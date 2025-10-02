@@ -367,6 +367,14 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
   (hoare_triple (fun c1 => P) m (fun c2 v => Q))
   (at level 100, c1 binder, v binder, c2 binder).
 
+(** Prove a goal of the form [scoping _ _].
+    Succeeds or does nothing. *)
+Ltac prove_scoping :=
+  match goal with
+  | [ |- scoping _ _ ] =>
+    solve [ cbn in * ; autounfold with scoping ; eauto 10 with scoping ]
+  end.
+
 (**************************************************************************)
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
@@ -391,14 +399,6 @@ Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   end
   end.
 
-(** Prove a goal of the form [scoping _ _].
-    Succeeds or does nothing. *)
-Ltac prove_scoping :=
-  match goal with
-  | [ |- scoping _ _ ] =>
-    solve [ cbn in * ; autounfold with scoping ; eauto 10 with scoping ]
-  end.
-
 Lemma cps_safe n t k :
   {{ ctx. scoping (length ctx) t /\ scoping (length ctx) k }}
     cps n t k
@@ -418,3 +418,43 @@ destruct t ; cbn.
   intros t' Ht'. apply IHn. { split ; prove_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
 Qed.
+
+
+(**************************************************************************)
+(** *** CPS transformation, second version. *)
+(**************************************************************************)
+
+Inductive red : term -> term -> Prop :=
+| red_beta :
+
+
+(**
+Γ |- t
+r : Γ -> Δ
+k : Δ
+
+Γ, x |- t
+------------
+Γ |- mk_lambda t
+
+*)
+
+Fixpoint cps2 (n : nat) (r : ren) (t : term) (k : term) : M term :=
+  match n with 0 => out_of_fuel | S n =>
+  match t with
+  | var i => ret (app k (var (r i)))
+  | app t1 t2 =>
+    cps n r t1 =<< mk_lambda ( (* x1 *)
+    cps n (rcomp r (lift0 1)) t2 =<< mk_lambda ( (* x2 *)
+    ret (apps (var 1 (* x1 *)) [ var 0 (* x2 *) ; rename (lift0 2) k ])))
+  | lam t' =>
+    app k <$>
+      mk_lambda ( (* x *)
+      mk_lambda ( (* k' *)
+      cps n (rename (lift0 1) t') (var 0 (* k' *))))
+  | letin t u =>
+    cps n t =<< mk_lambda ( (* v *)
+    mk_letin (var 0 (* v *)) ( (* x *)
+    cps n (rename (lift 1 1) u) (rename (lift0 2) k)))
+  end
+  end.
