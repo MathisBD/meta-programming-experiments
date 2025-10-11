@@ -1008,24 +1008,35 @@ Definition view (t : term) : term_view :=
   | letin def body => letinV def (fun x => body ^ x)
   end.
 
+(*
+
+Γ : list name
+Γ |- t(LN) ~> t'(DB, no names)
+
+Γ |- app t u ~> app t' u'  <-> Γ |- t ~> t' /\ Γ |- u ~> u'
+Γ |- lam t ~> lam t' <-> Γ, ↑ |- t ~> t'
+
+Γ |- t ~> t' -> x ∉ Γ -> Γ, x |- ↑t ~> ↑t'
+*)
+
 Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   match n with 0 => out_of_fuel | S n =>
-  match t with
-  | bvar i => error
-  | fvar x => ret $ app k (fvar x)
-  | app t1 t2 =>
+  match view t with
+  | bvarV i => error
+  | fvarV x => ret $ app k (fvar x)
+  | appV t1 t2 =>
     cps n t1 =<< mk_lambda (fun x1 =>
     cps n t2 =<< mk_lambda (fun x2 =>
     ret $ apps (fvar x1) [ fvar x2 ; k ]))
-  | lam t' =>
+  | lamV t' =>
     app k <$>
       mk_lambda (fun x =>
       mk_lambda (fun k' =>
-      cps n (t' ^ x) (fvar k')))
-  | letin t u =>
+      cps n (t' x) (fvar k')))
+  | letinV t u =>
     cps n t =<< mk_lambda (fun v =>
     mk_letin (fvar v) (fun x =>
-    cps n (u ^ x) k))
+    cps n (u x) k))
   end
   end.
 
@@ -1061,3 +1072,5 @@ destruct t ; cbn [view].
   intros t' Ht'. apply IHn. { split ; simpl_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
 Qed.
+
+Lemma cps_

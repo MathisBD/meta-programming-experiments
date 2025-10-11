@@ -1,6 +1,5 @@
 From Stdlib Require Import Bool Nat List Lia.
-From Stdlib.Classes Require Import Morphisms.
-From Equations Require Import Equations.
+From Stdlib Require Import Morphisms Relations.
 Import ListNotations.
 
 (** If [H] is a hypothesis [H : P -> Q], [feed H] first asks to prove [P],
@@ -189,6 +188,43 @@ intros t t' Ht. induction Ht.
 Qed.
 
 (**************************************************************************)
+(** *** Beta equivalence. *)
+(**************************************************************************)
+
+Reserved Notation "t '=β' u" (at level 55, no associativity).
+
+Inductive beta_eq : term -> term -> Prop :=
+(** Equivalence. *)
+| beta_eq_refl t : t =β t
+| beta_eq_sym t t' : t =β t' -> t' =β t
+| beta_eq_trans t t' t'' : t =β t' -> t' =β t'' -> t =β t''
+(** Congruence. *)
+| beta_eq_app t t' u u' : t =β t' -> u =β u' -> app t u =β app t' u'
+| beta_eq_lam t t' : t =β t' -> lam t =β lam t'
+(** Beta rule. *)
+| beta_eq_beta t u : app (lam t) u =β substitute (scons u sid) t
+where "t '=β' u" := (beta_eq t u).
+
+(** To be complete we should prove that [beta_eq] is
+    the reflexive, symmetric, and transitive closure of [red1]. *)
+
+#[export] Instance beta_eq_Equivalence : Equivalence beta_eq.
+Proof.
+constructor.
+- intros ?. apply beta_eq_refl.
+- intros ???. now apply beta_eq_sym.
+- intros ?????. eapply beta_eq_trans ; eauto.
+Qed.
+
+#[export] Instance beta_eq_app' :
+  Proper (beta_eq ==> beta_eq ==> beta_eq) app.
+Proof. intros ??????. now apply beta_eq_app. Qed.
+
+#[export] Instance beta_eq_lam' :
+  Proper (beta_eq ==> beta_eq) lam.
+Proof. intros ???. now apply beta_eq_lam. Qed.
+
+(**************************************************************************)
 (** *** Contexts and well-scoped terms. *)
 (**************************************************************************)
 
@@ -363,6 +399,61 @@ Definition mk_lambda (f : M term) : M term :=
      ret (lam body)).
 
 (**************************************************************************)
+(** *** Equality on meta-programs. *)
+(**************************************************************************)
+
+(** Pointwise equality on functions. *)
+
+Definition eq1 {A B} : relation (A -> B) :=
+  fun f g => forall x, f x = g x.
+Notation "f '=₁' g" := (eq1 f g) (at level 60, no associativity).
+
+Definition eq2 {A B C} : relation (A -> B -> C) :=
+  fun f g => forall x, f x =₁ g x.
+Notation "f '=₂' g" := (eq2 f g) (at level 60, no associativity).
+
+#[export] Instance eq1_equiv A B : Equivalence (@eq1 A B).
+Proof.
+constructor.
+- intros f x. reflexivity.
+- intros f g H x. now symmetry.
+- intros f g h H1 H2 x. etransitivity ; eauto.
+Qed.
+
+#[export] Instance eq2_equiv A B C : Equivalence (@eq2 A B C).
+Proof.
+constructor.
+- intros f x. reflexivity.
+- intros f g H x. now symmetry.
+- intros f g h H1 H2 x. etransitivity ; eauto.
+Qed.
+
+Lemma bind_ret_l {A B} (a : A) (f : A -> M B) :
+  bind (ret a) f =₁ f  a.
+Proof. intros ctx. cbn. reflexivity. Qed.
+
+Lemma bind_ret_r {A} (m : M A) :
+  bind m ret =₁ m.
+Proof. intros ctx. unfold bind. destruct (m ctx) as [[] |] ; reflexivity. Qed.
+
+#[export] Instance bind_proper A B :
+  Proper (eq1 ==> eq2 ==> eq1) (@bind A B).
+Proof.
+intros m m' Hm f f' Hf c. unfold bind. specialize (Hm c).
+rewrite Hm. destruct (m' c) as [[] |].
+- apply Hf.
+- reflexivity.
+Qed.
+
+#[export] Instance fmap_proper A B :
+  Proper (eq1 ==> eq1 ==> eq1) (@fmap A B).
+Proof.
+intros f f' Hf m m' Hm. unfold fmap. f_equiv.
+- exact Hm.
+- intros x. now rewrite Hf.
+Qed.
+
+(**************************************************************************)
 (** *** Relational program logic. *)
 (**************************************************************************)
 
@@ -376,6 +467,7 @@ Definition wp2 {A B} (c : context * context) (m : M A * M B) (Q : context * cont
   match m1 c1, m2 c2 with
   | Success (c1', a), Success (c2', b) => Q (c1', c2') (a, b)
   | _, _ => True
+
   end.
 
 Lemma wp2_ret {A1 A2} c1 c2 (a1 : A1) (a2 : A2) Q :
@@ -550,6 +642,35 @@ Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
   (hoare_triple (fun c1 => P) m (fun c2 v => Q))
   (at level 100, c1 binder, v binder, c2 binder).*)
 
+
+Lemma wp2_fuse {A1 A2 B1 B2} c1 c2 (m1 : M A1) (m2 : M A2) (f1 : A1 -> M B1) (f2 : A2 -> M B2) Φ :
+  wp2 (c1, c2) (bind m1 f1, bind m2 f2) Φ ->
+  wp2 (c1, c2) (m1, m2) (fun '(c1', c2') '(a1, a2) =>
+    wp2 (c1', c2') (f1 a1, f2 a2) Φ).
+Proof.
+unfold wp2, bind.
+destruct (m1 c1) as [[c1' a1] |] eqn:E1 ; destruct (m2 c2) as [[c2' a2] |] eqn:E2.
+all: auto.
+Qed.
+
+Definition prod_rel {A B} (RA : relation A) (RB : relation B) : relation (A * B) :=
+  fun '(a, b) '(a', b') => RA a a' /\ RB b b'.
+
+#[export] Instance wp2_proper A B :
+  Proper (eq ==> prod_rel eq1 eq1 ==> eq ==> iff) (@wp2 A B).
+Proof.
+intros ? [c1 c2] -> [m1 m2] [m1' m2'] [H1 H2] ? Φ ->. unfold wp2.
+specialize (H1 c1). specialize (H2 c2).
+destruct (m1 c1) as [[] |] ; destruct (m1' c1) as [[] |] ;
+destruct (m2 c2) as [[] |] ; destruct (m2' c2) as [[] |].
+all: try discriminate.
+all: inversion H1 ; inversion H2 ; subst ; reflexivity.
+Qed.
+
+#[export] Instance pair_proper {A B} (RA : relation A) (RB : relation B) :
+  Proper (RA ==> RB ==> prod_rel RA RB) (@pair A B).
+Proof. Admitted.
+
 (**************************************************************************)
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
@@ -570,6 +691,23 @@ Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
   end
   end.
 
+Lemma cps_beta_eq {A} (a : A) n c1 c2 t k :
+  wp2 (c1, c2) (cps n t k, ret a) (fun _ '(t', _) => t' =β app k t).
+Proof.
+induction n in t, k, c1, c2, a |- * ; cbn [cps] ; [apply wp2_out_of_fuel_l|].
+destruct t.
+- apply wp2_ret. reflexivity.
+- apply wp2_bind_l1, wp2_mk_lambda_l, wp2_bind_l1, wp2_mk_lambda_l, wp2_ret.
+  eapply wp2_consequence ; [apply IHn|]. intros c1' c2' t1' a' Ht1'.
+  cbn beta iota in Ht1'.
+  eapply wp2_consequence ; [apply IHn|]. intros c1'' c2'' t2' a'' Ht2'.
+  cbn beta iota in Ht2'.
+  rewrite Ht2'. rewrite Ht1'. rewrite beta_eq_beta. cbn [apps substitute].
+  rewrite beta_eq_beta. cbn [substitute].
+  rewrite beta_eq_beta. cbn
+  (* (lam. 0 ↑t2 ↑k ) t1 =?= k (t1 t2)
+  *)
+
 (** This lemma is trivial, but would be more tricky if [cps] could fail. *)
 Lemma cps_same n ctx t k :
   wp2 (ctx, ctx) (cps n t k, cps n t k) (fun '(c, c') '(u, u') => u = u' /\ c = ctx /\ c' = ctx).
@@ -586,12 +724,86 @@ destruct t.
   apply wp2_ret. auto.
 Qed.
 
+Lemma fmap_ret {A B} (f : A -> B) (x : A) :
+  f <$> ret x =₁ ret (f x).
+Proof. reflexivity. Qed.
+
+Lemma fmap_bind {A B B'} (f : B -> B') (m : M A) (g : A -> M B) :
+  f <$> (let* x := m in g x) =₁
+  let* x := m in f <$> g x.
+Proof.
+intros c. unfold fmap, bind. destruct (m c) as [[] |] ; reflexivity.
+Qed.
+
+#[export] Instance with_decl_proper A :
+  Proper (eq ==> eq1 ==> eq1) (@with_decl A).
+Proof.
+intros ? d -> m m' Hm. unfold with_decl. f_equiv. intros c. f_equiv.
+intros _. f_equiv. exact Hm.
+Qed.
+
+#[export] Instance mk_lambda_proper :
+  Proper (eq1 ==> eq1) mk_lambda.
+Proof.
+intros m m' Hm. unfold mk_lambda. f_equiv. now rewrite Hm.
+Qed.
+
+Lemma bind_assoc {A B C} (m : M A) (f : A -> M B) (g : B -> M C) :
+  bind (bind m f) g =₁
+  (bind m (fun x => bind (f x) g)).
+Proof.
+intros c. unfold bind. destruct (m c) as [[] |] ; reflexivity.
+Qed.
+
+Lemma bind_fmap_l {A A' B} (m : M A) (f : A -> A') (g : A' -> M B) :
+  bind (f <$> m) g =₁
+  bind m (fun x => g (f x)).
+Proof.
+intros c. unfold fmap, bind. destruct (m c) as [[] |] ; reflexivity.
+Qed.
+
+Lemma rename_mk_lambda r m :
+  (rename r <$> mk_lambda m) =₁
+  (mk_lambda (rename (rup r) <$> m)).
+Proof.
+unfold mk_lambda, with_decl. rewrite fmap_bind. f_equiv. intros c.
+rewrite fmap_bind. f_equiv. intros _. rewrite !bind_assoc.
+rewrite fmap_bind. rewrite bind_fmap_l. f_equiv.
+Qed.
+
+Lemma fmap_fmap {A B C} (m : M A) (f : A -> B) (g : B -> C) :
+  g <$> (f <$> m) =₁ (fun x => g (f x)) <$> m.
+Proof. unfold fmap. rewrite bind_assoc. f_equiv. Qed.
+
+Lemma rename_cps n t k r :
+  rename r <$> cps n t k =₁ cps n (rename r t) (rename r k).
+Proof.
+induction n in t, k, r |- * ; cbn [cps] ; [reflexivity|].
+destruct t ; cbn [rename].
+- rewrite fmap_ret. reflexivity.
+- rewrite fmap_bind.
+  assert ((fun x => rename r <$> cps n t1 x) =₂ (fun x => cps n (rename r t1) (rename r x))) as ->.
+  { intros x. now rewrite IHn. }
+  rewrite <-bind_fmap_l. f_equiv. rewrite rename_mk_lambda. f_equiv.
+  rewrite fmap_bind.
+  assert ((fun x => rename (rup r) <$> cps n (rename (lift0 1) t2) x) =₂
+          (fun x => cps n (rename (rup r) (rename (lift0 1) t2)) (rename (rup r) x))) as ->.
+  { intros x. now rewrite IHn. }
+  rewrite <-bind_fmap_l. f_equiv.
+  + rewrite rename_mk_lambda. f_equiv. rewrite fmap_ret. f_equiv. cbn.
+    f_equal. admit.
+  + f_equiv. admit.
+- rewrite fmap_fmap. cbn [rename]. rewrite <-fmap_fmap. f_equiv.
+  rewrite rename_mk_lambda. f_equiv. rewrite rename_mk_lambda. f_equiv.
+  rewrite IHn. f_equiv. admit.
+Admitted.
+
 (** [cps] commutes with renamings. *)
-Lemma cps_rename_r {A} (m : M A) n c1 c2 t k r Φ :
+(*Lemma cps_rename_r {A} (m : M A) n c1 c2 t k r Φ :
   wp2 (c1, c2) (m, cps n t k) (fun '(c1', c2') '(a, t') => Φ (c1', c2') (a, rename r t')) ->
   wp2 (c1, c2) (m, cps n (rename r t) (rename r k)) Φ.
 Proof.
-intros H. induction n in c1, c2, m, r, t, k, H |- * ; cbn [cps] in * ; [apply wp2_out_of_fuel_r|].
+intros H. induction n in c1, c2, m, r, t, k, H, Φ |- * ; cbn [cps] in * ; [apply wp2_out_of_fuel_r|].
 destruct t.
 - cbn in *. destruct (m c1) as [[] |] ; auto.
 - cbn [rename]. apply wp2_bind_r1, wp2_mk_lambda_r, wp2_bind_r2, wp2_mk_lambda_r, wp2_ret.
@@ -600,11 +812,9 @@ destruct t.
   assert (lam (apps (var 1) [ var 0 ; rename (lift0 2) (rename r k)]) =
     rename (rup r) (lam (apps (var 1) [ var 0 ; rename (lift0 2) k]))) as ->.
   { cbn [rename apps]. f_equal. f_equal. unfold rup. admit. }
-  eapply wp2_consequence ; [apply IHn|].
-  +  admit.
-  + intros c1' c2' ct2 ct2' Hct.
+  apply IHn.
 Admitted.
-
+*)
 (** Reduction in the continuation. *)
 Lemma cps_red_cont n ctx t k k' :
   k ~~>+ k' ->
@@ -624,6 +834,7 @@ destruct t.
   now apply red_plus_app_l.
 Qed.
 
+
 (** Reduction in the term. *)
 Lemma cps_red n ctx t t' k :
   t ~~>₁ t' ->
@@ -633,9 +844,20 @@ intros Ht. induction n in t, t', k, Ht, ctx |- * ; [apply wp2_out_of_fuel_l|].
 inversion Ht ; subst.
 - unfold cps at 1 ; fold cps.
   apply wp2_bind_l1, wp2_mk_lambda_l, wp2_bind_l1, wp2_mk_lambda_l.
-  fold cps.
+
+
   admit.
-- cbn [cps]. apply wp2_bind, wp2_mk_lambda, wp2_bind, wp2_mk_lambda, wp2_ret.
+- cbn [cps].
+  (*apply wp2_bind_l1, wp2_mk_lambda_l.
+  apply wp2_bind_l1, wp2_mk_lambda_l.
+  apply wp2_bind_r1, wp2_mk_lambda_r.
+  apply wp2_bind_r1, wp2_mk_lambda_r.
+  apply wp2_ret.
+  apply wp2_fuse. setoid_rewrite bind_ret_r.
+  apply wp2_fuse. setoid_rewrite bind_ret_r.
+  setoid_rewrite (bind_ret_l (apps (var 1) [var 0; rename (lift0 2) k])).
+  apply wp2_bind_r1.*)
+  apply wp2_bind, wp2_mk_lambda, wp2_bind, wp2_mk_lambda, wp2_ret.
   eapply wp2_consequence ; [apply cps_same|]. intros _ _ ? cu (-> & -> & ->).
   eapply wp2_consequence ; [apply IHn|]. { assumption. } intros c1' c2' ct ct'.
   cbn. auto.

@@ -442,14 +442,14 @@ Fixpoint reduce_stack (fuel : nat) (t : term) (stack : list term) : M (term * li
   | app f x => reduce_stack fuel f (x :: stack)
   | lam t =>
     match stack with
-    | arg :: stack =>
-      let* arg := reduce_stack fuel arg [] in
-      reduce_stack fuel (t ^^ zip arg) stack
     | [] =>
       let* x := fresh_name in
       with_decl (LocalAssum x)
         (let* t := reduce_stack fuel (t ^ x) [] in
          ret (lam (zip t \^ x), []))
+    | arg :: stack =>
+      let* arg := reduce_stack fuel arg [] in
+      reduce_stack fuel (t ^^ zip arg) stack
     end
   end
   end.
@@ -468,8 +468,8 @@ induction fuel in t, stack |- * ; cbn [reduce_stack] ; intros ctx Φ [Ht Hstack]
     * wp_steps. intros x Hx. wp_steps. apply IHfuel.
       {
         split ; [|auto].
-        (* Here we want to apply [H] which corresponds to the rule for lambdas in [well_scoped].
-           We get stuck because the premise of the introduction rule is too strong.
+        (* Here we want to apply [H] which corresponds to the rule for lambda in [well_scoped].
+           We get stuck because the premise of the rule is too strong.
            Indeed, we get an _arbitrary_ set [L], and we need to show that the name
            [x] we got from [fresh_name] is not in [L].
            i.e. we would need the rule for [well_scoped_lam] to have a universally quantified

@@ -3,6 +3,22 @@ From Stdlib.Classes Require Import Morphisms.
 From stdpp Require Import gmap.
 Import ListNotations.
 
+(** If [H] is a hypothesis [H : P -> Q], [feed H] first asks to prove [P],
+    and then the original goal with [H : Q]. *)
+
+Ltac feed_aux H :=
+  match type of H with
+  | ?P -> ?Q =>
+    let HP := fresh "H" in
+    assert P as HP ; [| specialize (H HP) ; clear HP ]
+  end.
+
+Tactic Notation "feed" ident(H) "by" tactic3(t) :=
+  feed_aux H ; [now t|].
+
+Tactic Notation "feed" ident(H) :=
+  feed_aux H.
+
 (**************************************************************************)
 (** *** Names of variables. *)
 (**************************************************************************)
@@ -219,7 +235,7 @@ now apply swap_fv.
 Qed.
 
 (** Existentially quantified version of [lc_lam]. *)
-Lemma lc_lam' x t :
+Lemma lc_lam_exists x t :
   x ∉ fv t -> lc (t ^ x) -> lc (lam t).
 Proof.
 intros Hx H. apply lc_lam. intros y Hy.
@@ -336,33 +352,123 @@ Reserved Notation "t '~~>' u" (at level 60, no associativity).
 
 Inductive red1 : term -> term -> Prop :=
 | red1_beta t u :
-    app (lam t) u ~~>₁ t ^^ u
+    lc (lam t) -> lc u -> app (lam t) u ~~>₁ t ^^ u
 | red1_app_l t t' u :
-    t ~~>₁ t' -> app t u ~~>₁ app t' u
+    lc u -> t ~~>₁ t' -> app t u ~~>₁ app t' u
 | red1_app_r t u u' :
-    u ~~>₁ u' -> app t u ~~>₁ app t u'
+    lc t -> u ~~>₁ u' -> app t u ~~>₁ app t u'
 | red1_lam t t' :
     (forall x, x ∉ fv t -> x ∉ fv t' -> t ^ x ~~>₁ t' ^ x) ->
     lam t ~~>₁ lam t'
 where "t '~~>₁' u" := (red1 t u).
 
-(*
-| red1_lam x t t' :
-    x ∉ fv t -> x ∉ fv t' -> t ^ x ~~>₁ t' ^ x ->
-    lam t ~~>₁ lam t'
+(** Reflexive transitive closure of a relation. *)
+Inductive star {A} (P : A -> Prop) (R : relation A) : relation A :=
+| star_refl (x : A) :
+    P x -> star P R x x
+| star_one (x y : A) :
+    P x -> P y -> R x y -> star P R x y
+| star_trans (x y z : A) :
+    P x -> P y -> P z ->
+    star P R x y -> star P R y z -> star P R x z.
 
-| red1_lam L t t' :
-    (forall x, x ∉ L -> t ^ x ~~>₁ t' ^ x) ->
-    lam t ~~>₁ lam t'
-
-*)
 Inductive red : term -> term -> Prop :=
-| red_refl t : t ~~> t
-| red_step t1 t2 t3 : t1 ~~> t2 -> t2 ~~>₁ t3 -> t1 ~~> t3
+| red_refl t :
+    lc t -> t ~~> t
+| red_trans t u v :
+    t ~~> u -> u ~~> v -> t ~~> v
+| red_beta t u :
+    lc (lam t) -> lc u -> app (lam t) u ~~> t ^^ u
+| red_app t t' u u' :
+    t ~~> t' -> u ~~> u' -> app t u ~~> app t' u'
+| red_lam t t' :
+    (forall x, x ∉ fv t -> x ∉ fv t' -> t ^ x ~~> t' ^ x) ->
+    lam t ~~> lam t'
 where "t '~~>' u" := (red t u).
 
-Lemma red_red1 t t' : t ~~>₁ t' -> t ~~> t'.
-Proof. intros H. eapply red_step ; [apply red_refl | exact H]. Qed.
+Lemma red1_lc t t' :
+  t ~~>₁ t' -> lc t /\ lc t'.
+Proof.
+intros H. induction H.
+- split.
+  + by apply lc_app.
+  + admit.
+- split ; apply lc_app ; easy.
+- split ; apply lc_app ; easy.
+- destruct (exist_fresh (fv t ∪ fv t')) as [x Hx].
+  split ; apply lc_lam_exists with x ; set_solver.
+Admitted.
+
+Lemma red_lc t t' :
+  t ~~> t' -> lc t /\ lc t'.
+Proof.
+intros H. induction H ; try easy.
+- split.
+  + by apply lc_app.
+  + admit.
+- split ; apply lc_app ; easy.
+- destruct (exist_fresh (fv t ∪ fv t')) as [x Hx].
+  split ; apply lc_lam_exists with x ; set_solver.
+Admitted.
+
+Lemma star_red1_app_l t t' u :
+  lc u -> star lc red1 t t' -> star lc red1 (app t u) (app t' u).
+Proof.
+intros Hu H. induction H in u, Hu |- *.
+- apply star_refl. by apply lc_app.
+- apply star_one ; try by apply lc_app. by apply red1_app_l.
+- apply star_trans with (app y u) ; try by apply lc_app.
+  + by apply IHstar1.
+  + by apply IHstar2.
+Qed.
+
+Lemma star_red1_app_r t u u' :
+  lc t -> star lc red1 u u' -> star lc red1 (app t u) (app t u').
+Proof. Admitted.
+
+Lemma red_red1_aux t t' :
+  t ~~>₁ t' -> t ~~> t'.
+Proof.
+intros H. induction H.
+- by apply red_beta.
+- apply red_app ; [assumption|]. by apply red_refl.
+- apply red_app ; [|assumption]. by apply red_refl.
+- apply red_lam. apply H0.
+Qed.
+
+Lemma red_red1 t t' :
+  star lc red1 t t' <-> t ~~> t'.
+Proof.
+split ; intros H ; induction H.
+- by apply red_refl.
+- apply red_trans with y.
+  + by apply red_red1_aux.
+  + by apply red_refl.
+- by apply red_trans with y.
+- by apply star_refl.
+- apply red_lc in H, H0. apply star_trans with u ; easy.
+- apply star_one.
+  + by apply lc_app.
+  + admit.
+  + by apply red1_beta.
+- apply star_trans with (app t' u).
+  + apply red_lc in H, H0. apply lc_app ; easy.
+  + apply red_lc in H, H0. apply lc_app ; easy.
+  + apply red_lc in H, H0. apply lc_app ; easy.
+  + apply star_red1_app_l.
+    * admit.
+    * assumption.
+  + apply star_red1_app_r.
+    * admit.
+    * assumption.
+-
+Admitted.
+
+(*Lemma red_red1 t t' : t ~~>₁ t' -> t ~~> t'.
+Proof.
+intros H. eapply red_step ; [apply red_refl | exact H].
+apply red1_lc in H ; easy.
+Qed.*)
 
 (*(** Reduction can't create free variables. *)
 Lemma fv_red1 t t' :
@@ -392,55 +498,80 @@ Lemma swap_red1 a b t t' :
 Proof.
 intros H. induction H ; cbn.
 - rewrite swap_open. apply red1_beta.
-- now apply red1_app_l.
-- now apply red1_app_r.
+  + by apply (swap_lc a b (lam t)).
+  + by apply swap_lc.
+- apply red1_app_l.
+  + by apply swap_lc.
+  + assumption.
+- apply red1_app_r.
+  + by apply swap_lc.
+  + assumption.
 - apply red1_lam. intros x Hx1 Hx2. specialize (H0 (swap_name a b x)).
   rewrite !swap_open_var, !swap_name_inv in H0. apply H0.
   + intros Hx' ; apply Hx1. rewrite <-(swap_name_inv a b x). now apply swap_fv.
   + intros Hx' ; apply Hx2. rewrite <-(swap_name_inv a b x). now apply swap_fv.
 Qed.
 
-Lemma red1_lam' x t t' :
+Lemma red1_lam_exists x t t' :
   x ∉ fv t -> x ∉ fv t' -> t ^ x ~~>₁ t' ^ x -> lam t ~~>₁ lam t'.
 Proof.
 intros Hx1 Hx2 H. apply red1_lam. intros y Hy1 Hy2. apply (swap_red1 x y) in H.
 rewrite !swap_open_var, !swap_name_left in H. now rewrite !swap_free in H.
 Qed.
 
-#[local] Instance red_Equivalence : PreOrder red.
-Proof.
-constructor.
-- intros t. apply red_refl.
-- intros t1 t2 t3 H1 H2. induction H2.
-  + assumption.
-  + apply red_step with (t2 := t2) ; auto.
-Qed.
+#[local] Instance red_Transitive : Transitive red.
+Proof. intros t1 t2 t3 H1 H2. by apply red_trans with t2. Qed.
 
-#[local] Instance red_app : Proper (red ==> red ==> red) app.
-Proof.
-intros t t' Ht u u' Hu. transitivity (app t u').
-- induction Hu.
-  + reflexivity.
-  + transitivity (app t t2) ; [assumption|]. apply red_red1. now apply red1_app_r.
-- induction Ht.
-  + reflexivity.
-  + transitivity (app t2 u') ; [assumption|]. apply red_red1. now apply red1_app_l.
-Qed.
+#[local] Instance red_app' : Proper (red ==> red ==> red) app.
+Proof. intros t t' Ht u u' Hu. by apply red_app. Qed.
 
 Lemma swap_red a b t t' :
   t ~~> t' -> swap a b t ~~> swap a b t'.
 Proof.
-intros H. induction H.
-- reflexivity.
-- rewrite IHred. now apply red_red1, swap_red1.
-Qed.
+intros H.
+Admitted.
 
-Lemma red_lam' x t t' :
+Lemma close_open x t :
+  x ∉ fv t -> (t ^ x) \^ x = t.
+Proof. Admitted.
+
+Lemma red_lam_forall x t t' :
+  x ∉ fv t -> x ∉ fv t' -> t ^ x ~~> t' ^ x ->
+  lam t ~~> lam t'.
+Proof.
+intros Hx1 Hx2 H.
+remember (t ^ x) as tx eqn:Htx. remember (t' ^ x) as tx' eqn:Htx'.
+induction H in x, t, t', Hx1, Hx2, Htx, Htx' |- * ; subst.
+- enough (Heq : t = t').
+  { subst. apply red_refl. apply lc_lam_exists with x ; set_solver. }
+  apply (f_equal (close 0 x)) in Htx'.
+  rewrite !close_open in Htx' by set_solver. now symmetry.
+-
+
+
+destruct (exist_fresh (fv t ∪ fv t')) as [x Hx].
+pose proof (Hred := H x). feed Hred by set_solver. feed Hred by set_solver.
+remember (t ^ x) as tx eqn:Htx. remember (t' ^ x) as tx' eqn:Htx'.
+induction Hred in x, t, t', Hx, H, Htx, Htx' |- * ; subst.
+- enough (Heq : t = t').
+  { subst. apply red_refl. apply lc_lam_exists with x ; set_solver. }
+  apply (f_equal (close 0 x)) in Htx'.
+  rewrite !close_open in Htx' by set_solver. now symmetry.
+- transitivity (lam (t2 \^ x)).
+  + apply IHHred with x.
+    * intros y Hy1 Hy2.
+
+
+Admitted.
+
+Lemma red_lam_exists x t t' :
   x ∉ fv t -> x ∉ fv t' -> t ^ x ~~> t' ^ x -> lam t ~~> lam t'.
 Proof.
-(*intros Hx1 Hx2 H. remember (t ^ x) as tx. remember (t' ^ x) as tx'. induction H. apply red_lam. intros y Hy1 Hy2. apply (swap_red1 x y) in H.
-rewrite !swap_open_var, !swap_name_left in H. now rewrite !swap_free in H.*)
-Admitted.
+intros Hx1 Hx2 H. apply red_lam_forall.
+intros y Hy1 Hy2. apply (swap_red x y) in H.
+rewrite !swap_open_var, !swap_name_left in H.
+rewrite !swap_free in H by assumption. exact H.
+Qed.
 
 Lemma red_beta t u : app (lam t) u ~~> t ^^ u.
 Proof. apply red_red1. constructor. Qed.

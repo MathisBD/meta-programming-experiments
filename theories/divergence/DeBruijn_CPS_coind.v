@@ -1,7 +1,9 @@
+From Coinduction Require Import all.
 From Stdlib Require Import Bool Nat List Lia.
 From Stdlib.Classes Require Import Morphisms.
-From Equations Require Import Equations.
 Import ListNotations.
+
+Set Primitive Projections.
 
 (** If [H] is a hypothesis [H : P -> Q], [feed H] first asks to prove [P],
     and then the original goal with [H : Q]. *)
@@ -27,8 +29,7 @@ Tactic Notation "feed" ident(H) :=
 Inductive term :=
 | var : nat -> term
 | app : term -> term -> term
-| lam : term -> term
-| letin : term -> term -> term.
+| lam : term -> term.
 
 (** [apps f xs] forms the n-ary application of [f] to arguments [xs]. *)
 Fixpoint apps (f : term) (xs : list term) : term :=
@@ -36,6 +37,24 @@ Fixpoint apps (f : term) (xs : list term) : term :=
   | [] => f
   | x :: xs => apps (app f x) xs
   end.
+
+(** Size of a term. *)
+Fixpoint term_size (t : term) : nat :=
+  match t with
+  | var _ => 0
+  | app t1 t2 => S (term_size t1 + term_size t2)
+  | lam t => S (term_size t)
+  end.
+
+(** Well-founded inductions on terms using their size. *)
+Lemma term_size_ind (P : term -> Prop)
+  (IH : forall t, (forall t', term_size t' < term_size t -> P t') -> P t) :
+  forall t, P t.
+Proof.
+intros t.
+induction (Wf_nat.well_founded_ltof term term_size t) as [t IHt Ht].
+unfold Wf_nat.ltof in *. apply IH. apply Ht.
+Qed.
 
 (**************************************************************************)
 (** *** Renamings. *)
@@ -84,8 +103,17 @@ Fixpoint rename (r : ren) (t : term) : term :=
   | var i => var (r i)
   | app t1 t2 => app (rename r t1) (rename r t2)
   | lam t => lam (rename (rup r) t)
-  | letin t u => letin (rename r t) (rename (rup r) u)
   end.
+
+(** Renaming a term doesn't change its size. *)
+Lemma size_rename r t :
+  term_size (rename r t) = term_size t.
+Proof.
+induction t in r |- * ; cbn.
+- reflexivity.
+- rewrite IHt1, IHt2 ; lia.
+- rewrite IHt ; lia.
+Qed.
 
 (**************************************************************************)
 (** *** Contexts and well-scoped terms. *)
@@ -108,13 +136,9 @@ Inductive scoping : nat -> term -> Prop :=
     scoping n (app t1 t2)
 | scoping_lam n t :
     scoping (S n) t ->
-    scoping n (lam t)
-| scoping_letin n t u :
-    scoping n t ->
-    scoping (S n) u ->
-    scoping n (letin t u).
+    scoping n (lam t).
 
-#[export] Hint Resolve scoping_var scoping_app scoping_lam scoping_letin : scoping.
+#[export] Hint Resolve scoping_var scoping_app scoping_lam : scoping.
 #[export] Hint Extern 10 (_ < _) => lia : scoping.
 
 Lemma scoping_var_zero n :
@@ -128,15 +152,12 @@ Proof. constructor. inversion H ; subst. lia. Qed.
 #[export] Hint Resolve scoping_var_zero scoping_var_succ : scoping.
 
 Lemma scoping_weaken n n' t :
-  n <= n' -> scoping n t -> scoping n' t.
+  le n n' -> scoping n t -> scoping n' t.
 Proof.
 intros Hn H. induction H in n', Hn |- *.
 - constructor. lia.
 - constructor ; auto.
 - constructor. apply IHscoping. lia.
-- constructor.
-  + apply IHscoping1. assumption.
-  + apply IHscoping2. lia.
 Qed.
 
 Lemma scoping_weaken_one n t :
@@ -190,45 +211,134 @@ intros Ht Hr. induction Ht in r, Hr, n2 |- * ; cbn.
 - constructor. apply IHHt. intros i Hi. destruct i as [|i] ; cbn in *.
   + lia.
   + unfold rcomp, rshift. rewrite <-PeanoNat.Nat.succ_lt_mono. apply Hr. lia.
-- constructor.
-  + now apply IHHt1.
-  + apply IHHt2. intros i Hi. destruct i as [|i] ; cbn in *.
-    * lia.
-    * unfold rcomp, rshift. rewrite <-PeanoNat.Nat.succ_lt_mono. apply Hr. lia.
 Qed.
 
 #[export] Hint Resolve scoping_rename : scoping.
 
+(** Prove a goal of the form [scoping _ _].
+    Succeeds or does nothing. *)
+Ltac prove_scoping :=
+  match goal with
+  | [ |- scoping _ _ ] =>
+    solve [ cbn in * ; autounfold with scoping ; eauto 10 with scoping ]
+  end.
+
 (**************************************************************************)
-(** *** Monadic programs. *)
+(** *** Events. *)
 (**************************************************************************)
 
-(** Our monad [M] allows several effects:
-    - read/write access to a local context.
-    - critical failure.
-    - out of fuel, which is not considered a failure. *)
+Notation "F '~>' G" := (forall A, F A -> G A)
+  (at level 99, right associativity, only parsing) : type_scope.
 
-Inductive result (A : Type) : Type :=
-| Success (x : A) : result A
-| Error : result A
-| OutOfFuel : result A.
-Arguments Success {A} x.
-Arguments Error {A}.
-Arguments OutOfFuel {A}.
+(** Events. *)
 
-Definition M (A : Type) : Type :=
-  context -> result (context * A).
+Variant failE : Type -> Type :=
+| Fail {A} : failE A.
 
-Definition ret {A} (x : A) : M A :=
-  fun ctx => Success (ctx, x).
+Variant ctxE : Type -> Type :=
+| GetCtx : ctxE context
+| PutCtx : context -> ctxE unit.
 
-Definition bind {A B} (mx : M A) (f : A -> M B) : M B :=
-  fun ctx =>
-    match mx ctx with
-    | Success (ctx, x) => f x ctx
-    | OutOfFuel => OutOfFuel
-    | Error => Error
-    end.
+(** Sum of events. *)
+
+Variant sumE (E F : Type -> Type) : Type -> Type :=
+| sumE_left A : E A -> sumE E F A
+| sumE_right A : F A -> sumE E F A.
+
+Arguments sumE_left {E F A}.
+Arguments sumE_right {E F A}.
+
+Notation "E '+'' F" := (sumE E F) (at level 30, right associativity).
+
+(** Automatic injection of events. *)
+
+Class inject (E F : Type -> Type) : Type := {
+  inj {A} : E A -> F A
+}.
+
+Notation "E '>->' F" := (inject E F) (at level 40, no associativity).
+
+#[export] Instance inject_same E : inject E E := {
+  inj {A} (e : E A) := e
+}.
+
+#[export] Instance inject_left E F1 F2 : inject E F1 -> inject E (F1 +' F2) := {
+  inj {A} (e : E A) := sumE_left (inj e)
+}.
+
+#[export] Instance inject_right E F1 F2 : inject E F2 -> inject E (F1 +' F2) := {
+  inj {A} (e : E A) := sumE_right (inj e)
+}.
+
+(**************************************************************************)
+(** *** Interaction trees. *)
+(**************************************************************************)
+
+Variant itreeF (itree : (Type -> Type) -> Type -> Type) (E : Type -> Type) (A : Type) : Type :=
+| RetF (x : A)
+| TauF (m : itree E A)
+| VisF {B} (e : E B) (k : B -> itree E A).
+
+Arguments RetF {itree E A}.
+Arguments TauF {itree E A}.
+Arguments VisF {itree E A B}.
+
+CoInductive itree (E : Type -> Type) (A : Type) : Type := go
+{ observe : itreeF itree E A }.
+
+Arguments go {E A}.
+Arguments observe {E A}.
+
+(*Section WeakBisimulation.
+  Context {E : Type -> Type} {A : Type}.
+
+  Inductive bisimF (R : itree E A -> itree E A -> Prop) : itree E A -> itree E A -> Prop :=
+  (** Congruence rules. *)
+  | bisim_ret x : bisimF R (Ret x) (Ret x)
+  | bisim_tau m m' : R m m' -> bisimF R (Tau m) (Tau m')
+  | bisim_vis {B} (e : E B) k k' :
+      (forall x, R (k x) (k' x)) -> bisimF R (Vis e k) (Vis e k')
+  (** Strip off a single [Tau] on either side. *)
+  | bisim_tau_l m m' : bisimF R m m' -> bisimF R (Tau m) m'
+  | bisim_tau_r m m' : bisimF R m m' -> bisimF R m (Tau m').
+
+  Lemma bisimF_mono : Proper (leq ==> leq) bisimF.
+  Proof.
+  intros R R' HR m m' Hm. induction Hm ; constructor ; auto.
+  - now apply HR.
+  - intros x. now apply HR.
+  Qed.
+
+  Definition bisim_mon : mon (itree E A -> itree E A -> Prop) :=
+    {| body := bisimF ; Hbody := bisimF_mono |}.
+
+End WeakBisimulation.
+
+(** Weak bisimulation (equality on itrees). *)
+Infix "~" := (gfp bisim_mon) (at level 70).
+(* Intuitively, the pairs in our coinduction candidate *)
+Infix "[~]" := (elem _) (at level 70).
+(* Intuitively, the pairs that will be unlocked after a step *)
+Infix "{~}" := (bisim_mon (elem _)) (at level 70).*)
+
+Definition Ret {E A} (x : A) : itree E A := go (RetF x).
+Definition Tau {E A} (m : itree E A) : itree E A := go (TauF m).
+Definition Vis {E A B} (e : E B) (k : B -> itree E A) : itree E A := go (VisF e k).
+
+
+Definition bind {E A B} (m : itree E A) (f : A -> itree E B) : itree E B :=
+  (cofix bind_ m' :=
+    match observe m' with
+    | RetF x => f x
+    | TauF m' => Tau (bind_ m')
+    | VisF e k => Vis e (fun x => bind_ (k x))
+    end) m.
+
+(*Lemma bind_bisim {E A B} :
+  Proper (gfp bisim_mon ==> pointwise_relation A (gfp bisim_mon) ==> gfp bisim_mon) (@bind E A B).
+Proof.
+intros m m' Hm f f' Hf. unfold pointwise_relation in Hf. coinduction R CIH.
+cbn.*)
 
 Notation "x >>= f" := (bind x f) (at level 50, no associativity).
 Notation "f =<< x" := (bind x f) (at level 50, no associativity).
@@ -237,52 +347,99 @@ Notation "f =<< x" := (bind x f) (at level 50, no associativity).
 Notation "'let*' x ':=' t 'in' u" := (bind t (fun x => u))
   (at level 100, right associativity, t at next level, x pattern).
 
-Definition fmap {A B} (f : A -> B) (mx : M A) : M B :=
+Definition fmap {E A B} (f : A -> B) (mx : itree E A) : itree E B :=
   let* x := mx in
-  ret (f x).
+  Ret (f x).
 
 Notation "f <$> x" := (fmap f x) (at level 30, right associativity).
 
-(** Signal fuel is out. *)
-Definition out_of_fuel {A} : M A := fun ctx => OutOfFuel.
+Definition trigger {E F} `{E >-> F} : E ~> itree F :=
+  fun A e => Vis (inj e) Ret.
+
+Arguments trigger {E F} {_} {A} e.
+
+(** (mutual) fixpoint combinator. *)
+Definition mrec {recE E} (handle_recE : recE ~> itree (recE +' E)) : recE ~> itree E :=
+  fun A e =>
+    (cofix loop {A} (m : itree (recE +' E) A) : itree E A :=
+      match observe m with
+      | RetF x => Ret x
+      | TauF m => Tau (loop m)
+      | VisF (sumE_left e) k =>
+        Tau (loop (bind (handle_recE _ e) k))
+      | VisF (sumE_right e) k =>
+        Tau (let* x := trigger e in loop (k x))
+      end) _ (handle_recE _ e).
+
+Arguments mrec {recE E} handle_recE {A} e.
 
 (** Fail. *)
-Definition error {A} : M A := fun ctx => Error.
+Definition fail {E A} `{failE >-> E} : itree E A :=
+  trigger Fail.
 
 (** Read the local context. *)
-Definition get_ctx : M context :=
-  fun ctx => Success (ctx, ctx).
+Definition get_ctx {E} `{ctxE >-> E} : itree E context :=
+  trigger GetCtx.
 
 (** Replace the local context. *)
-Definition put_ctx (ctx : context) : M unit :=
-  fun _ => Success (ctx, tt).
+Definition put_ctx {E} `{ctxE >-> E} (ctx : context) : itree E unit :=
+  trigger (PutCtx ctx).
 
 (** Extend the local context with a new local declaration,
     run a computation, and restore the local context. *)
-Definition with_decl {A} (d : ldecl) (m : M A) : M A :=
+Definition with_decl {E A} `{ctxE >-> E} (d : ldecl) (m : itree E A) : itree E A :=
   let* ctx := get_ctx in
   let* _ := put_ctx (d :: ctx) in
   let* a := m in
   let* _ := put_ctx ctx in
-  ret a.
+  Ret a.
 
 (** Convenience function to build a lambda abstraction. *)
-Definition mk_lambda (f : M term) : M term :=
+Definition mk_lambda {E} `{ctxE >-> E} (f : itree E term) : itree E term :=
   with_decl LAssum
     (let* body := f in
-     ret (lam body)).
+     Ret (lam body)).
 
-(** Convenience function to build a let-expression. *)
-Definition mk_letin (def : term) (f : M term) : M term :=
-  with_decl (LDef def)
-    (let* body := f in
-     ret (letin def body)).
+(**************************************************************************)
+(** *** Semantics of monadic computations. *)
+(**************************************************************************)
+
+(*Reserved Notation "'(' c1 ',' m1 ')' '~>' '(' c2 ',' m2 ')'"
+  (at level 0, no associativity).
+
+(** Coinductive small-step reduction relation. *)
+CoInductive step {A} : context * M A -> context * M A -> Prop :=
+| step_ret c x :
+    (c, Ret x) ~> (c, Ret x)
+| step_tau c m :
+    (c, Tau m) ~> (c, m)
+| step_get_ctx c k :
+    (c, Vis GetCtx k) ~> (c, k c)
+| step_put_ctx c1 c2 k :
+    (c1, Vis (PutCtx c2) k) ~> (c2, k tt)
+where "'(' c1 ',' m1 ')' '~>' '(' c2 ',' m2 ')'" := (step (c1, m1) (c2, m2)).*)
+
+(**************************************************************************)
+(** *** Termination. *)
+(**************************************************************************)
+
+(*Inductive terminates {A} : context -> M A -> Prop :=
+| terminates_ret c x :
+    terminates c (Ret x)
+| terminates_tau c m :
+    terminates c m -> terminates c (Tau m)
+| terminates_error {B} c (k : B -> M A) :
+    terminates c (Vis Error k)
+| terminates_get_ctx c k :
+    terminates c (k c) -> terminates c (Vis GetCtx k)
+| terminates_put_ctx c1 c2 k :
+    terminates c2 (k tt) -> terminates c1 (Vis (PutCtx c2) k).*)
 
 (**************************************************************************)
 (** *** Program logic. *)
 (**************************************************************************)
 
-(** Weakest-precondition: [wp ctx m Q] means that running [m] in initial
+(*(** Weakest-precondition: [wp ctx m Q] means that running [m] in initial
     context [ctx] will not raise an error (out of fuel is fine), and the
     return value and final context satisfy [Q]. *)
 Definition wp {A} (ctx1 : context) (m : M A) (Q : context -> A -> Prop) : Prop :=
@@ -365,41 +522,76 @@ Definition hoare_triple {A} (P : context -> Prop) (m : M A) (Q : context -> A ->
 (** Hoare triple. *)
 Notation "'{{' c1 '.' P '}}' m '{{' c2 v '.' Q '}}'" :=
   (hoare_triple (fun c1 => P) m (fun c2 v => Q))
-  (at level 100, c1 binder, v binder, c2 binder).
-
-(** Prove a goal of the form [scoping _ _].
-    Succeeds or does nothing. *)
-Ltac prove_scoping :=
-  match goal with
-  | [ |- scoping _ _ ] =>
-    solve [ cbn in * ; autounfold with scoping ; eauto 10 with scoping ]
-  end.
+  (at level 100, c1 binder, v binder, c2 binder).*)
 
 (**************************************************************************)
 (** *** CPS transformation meta-program. *)
 (**************************************************************************)
 
-Fixpoint cps (n : nat) (t : term) (k : term) : M term :=
-  match n with 0 => out_of_fuel | S n =>
-  match t with
-  | var i => ret (app k (var i))
-  | app t1 t2 =>
-    cps n t1 =<< mk_lambda ( (* x1 *)
-    cps n (rename (lift0 1) t2) =<< mk_lambda ( (* x2 *)
-    ret (apps (var 1 (* x1 *)) [ var 0 (* x2 *) ; rename (lift0 2) k ])))
-  | lam t' =>
+Variant cpsE : Type -> Type :=
+| CPS : term -> term -> cpsE term.
+
+(** Handle a single [cpsE] event. Recursive calls are added as new events. *)
+Definition handle_cpsE {E} `{ctxE >-> E} : cpsE ~> itree (cpsE +' E) :=
+  fun _ e =>
+  match e with
+  | CPS (var i) k => Ret (app k (var i))
+  | CPS (app t1 t2) k =>
+    let* k2 :=
+      mk_lambda ( (* x2 *)
+      Ret (apps (var 1 (* x1 *)) [ var 0 (* x2 *) ; rename (lift0 2) k ]))
+    in
+    let* k1 :=
+      mk_lambda ( (* x1 *)
+      trigger (CPS (rename (lift0 1) t2) k2))
+    in
+    trigger (CPS t1 k1)
+  | CPS (lam t') k =>
     app k <$>
       mk_lambda ( (* x *)
       mk_lambda ( (* k' *)
-      cps n (rename (lift0 1) t') (var 0 (* k' *))))
-  | letin t u =>
-    cps n t =<< mk_lambda ( (* v *)
-    mk_letin (var 0 (* v *)) ( (* x *)
-    cps n (rename (lift 1 1) u) (rename (lift0 2) k)))
-  end
+      trigger (CPS (rename (lift0 1) t') (var 0 (* k' *)))))
   end.
 
-Lemma cps_safe n t k :
+(** Tie the knot. *)
+Definition cps {E} `{ctxE >-> E} (t k : term) : itree E term :=
+  mrec handle_cpsE (CPS t k).
+
+Lemma cps_var i k : observe (cps (var i) k) = RetF (app k (var i)).
+Proof. cbn. reflexivity. Qed.
+
+(** Termination, specialized to [ctxE] events. *)
+Inductive terminates {A} : context -> itreeF itree ctxE A -> Prop :=
+| terminates_ret c x :
+    terminates c (RetF x)
+| terminates_tau c m :
+    terminates c (observe m) -> terminates c (TauF m)
+| terminates_get_ctx c k :
+    terminates c (observe (k c)) -> terminates c (VisF GetCtx k)
+| terminates_put_ctx c1 c2 k :
+    terminates c2 (observe (k tt)) -> terminates c1 (VisF (PutCtx c2) k).
+
+Lemma cps_terminates c t k : terminates c (observe (cps t k)).
+Proof.
+induction t in c, k |- * using term_size_ind. destruct t.
+- cbn. apply terminates_ret.
+- cbn.
+  repeat first [ cbn ; apply terminates_tau
+               | cbn ; apply terminates_get_ctx
+               | cbn ; apply terminates_put_ctx].
+  cbn.
+  apply terminates_tau ; cbn.
+  apply terminates_get_ctx ; cbn.
+  apply terminates_tau ; cbn.
+  apply terminates_put_ctx ; cbn.
+  apply terminates_tau ; cbn.
+  apply terminates_put_ctx ; cbn.
+  apply terminates_tau ; cbn.
+  apply terminates_get_ctx ; cbn.
+  apply terminates_tau ; cbn.
+
+
+(*Lemma cps_safe n t k :
   {{ ctx. scoping (length ctx) t /\ scoping (length ctx) k }}
     cps n t k
   {{ ctx t'. scoping (length ctx) t' }}.
@@ -417,44 +609,4 @@ destruct t ; cbn.
   apply IHn. { split ; prove_scoping. }
   intros t' Ht'. apply IHn. { split ; prove_scoping. }
   intros t'' Ht''. apply HΦ. assumption.
-Qed.
-
-
-(**************************************************************************)
-(** *** CPS transformation, second version. *)
-(**************************************************************************)
-
-Inductive red : term -> term -> Prop :=
-| red_beta :
-
-
-(**
-Γ |- t
-r : Γ -> Δ
-k : Δ
-
-Γ, x |- t
-------------
-Γ |- mk_lambda t
-
-*)
-
-Fixpoint cps2 (n : nat) (r : ren) (t : term) (k : term) : M term :=
-  match n with 0 => out_of_fuel | S n =>
-  match t with
-  | var i => ret (app k (var (r i)))
-  | app t1 t2 =>
-    cps n r t1 =<< mk_lambda ( (* x1 *)
-    cps n (rcomp r (lift0 1)) t2 =<< mk_lambda ( (* x2 *)
-    ret (apps (var 1 (* x1 *)) [ var 0 (* x2 *) ; rename (lift0 2) k ])))
-  | lam t' =>
-    app k <$>
-      mk_lambda ( (* x *)
-      mk_lambda ( (* k' *)
-      cps n (rename (lift0 1) t') (var 0 (* k' *))))
-  | letin t u =>
-    cps n t =<< mk_lambda ( (* v *)
-    mk_letin (var 0 (* v *)) ( (* x *)
-    cps n (rename (lift 1 1) u) (rename (lift0 2) k)))
-  end
-  end.
+Qed.*)
